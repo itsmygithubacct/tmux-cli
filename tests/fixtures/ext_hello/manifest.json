@@ -1,0 +1,11 @@
+{
+    "name": "ext_hello",
+    "version": "0.0.1",
+    "module": "ext_hello_module",
+    "min_tmux_browse": "0.7.0.4",
+    "routes_entry": "ext_hello_routes:register",
+    "cli_entry": "ext_hello_cli:register_verb",
+    "ui_blocks_path": "ui_blocks.html",
+    "static_dir": "static",
+    "state_paths": ["ext-hello-state.json"]
+}

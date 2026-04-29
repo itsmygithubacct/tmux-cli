@@ -1,0 +1,7 @@
+{
+    "name": "ext_bad_collide",
+    "version": "0.0.1",
+    "module": "ext_bad_collide_module",
+    "min_tmux_browse": "0.7.0.4",
+    "routes_entry": "ext_bad_collide_routes:register"
+}
