@@ -214,7 +214,8 @@ def kill(session: str) -> tuple[bool, str]:
 
 
 def new_session(name: str, cwd: str | None = None, cmd: str | None = None,
-                width: int = 200, height: int = 50) -> tuple[bool, str]:
+                width: int = 200, height: int = 50,
+                enable_logging: bool = True) -> tuple[bool, str]:
     """Create a detached tmux session. The single canonical create path."""
     try:
         _validate_name(name)
@@ -230,12 +231,12 @@ def new_session(name: str, cwd: str | None = None, cmd: str | None = None,
         args.append(cmd)
     r = subprocess.run(args, capture_output=True, text=True, timeout=10)
     if r.returncode == 0:
-        # Enable continuous log capture for hash-based idle detection.
-        try:
-            from . import session_logs
-            session_logs.ensure_logging(name)
-        except Exception:
-            pass
+        if enable_logging:
+            try:
+                from . import session_logs
+                session_logs.ensure_logging(name)
+            except Exception:
+                pass
         return True, ""
     return False, (r.stderr or r.stdout).strip()
 

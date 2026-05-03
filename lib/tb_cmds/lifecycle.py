@@ -30,7 +30,8 @@ def cmd_new(args: argparse.Namespace) -> int:
         raise UsageError("refusing to --attach from non-TTY")
     if sessions.exists(name):
         raise SessionExists(f"session '{name}' already exists")
-    ok, err = sessions.new_session(name, cwd=args.cwd, cmd=args.cmd)
+    ok, err = sessions.new_session(name, cwd=args.cwd, cmd=args.cmd,
+                                   enable_logging=not args.no_log)
     if not ok:
         raise TmuxFailed(err)
     if args.json:
@@ -99,6 +100,9 @@ def register(sub, common) -> None:
                    help="attach after creating (requires TTY)")
     p.add_argument("--auto", action="store_true",
                    help="generate a random name and print it")
+    p.add_argument("--no-log", action="store_true",
+                   help="don't enable pipe-pane logging "
+                        "(disables hash-based idle detection for this session)")
     p.set_defaults(func=cmd_new)
 
     p = sub.add_parser("kill", help="kill a session (and any child processes)",
