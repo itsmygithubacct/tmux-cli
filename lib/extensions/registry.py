@@ -40,6 +40,13 @@ class Registration:
     static_js: list[Path] = field(default_factory=list)
     startup: list[Callable[[Any], None]] = field(default_factory=list)
     shutdown: list[Callable[[], None]] = field(default_factory=list)
+    # Mutators for the session-row list returned by ``_session_summary``.
+    # Called in order at the end of the summary build (only when
+    # ``merge_peers=True``); each receives the row list and mutates it
+    # in place. The federation extension uses this to fan out to paired
+    # peers and append their rows. Unlike routes/verbs/slots, multiple
+    # extensions may register processors and they are NOT collision-checked.
+    session_post_processors: list[Callable[[list[dict]], None]] = field(default_factory=list)
 
 
 class RegistryConflict(ValueError):
@@ -58,6 +65,7 @@ class MergedRegistry:
     static_js: list[Path] = field(default_factory=list)
     startup: list[tuple[str, Callable[[Any], None]]] = field(default_factory=list)
     shutdown: list[tuple[str, Callable[[], None]]] = field(default_factory=list)
+    session_post_processors: list[tuple[str, Callable[[list[dict]], None]]] = field(default_factory=list)
     # Name of the extension that claimed each key — used for clear
     # conflict errors.
     _provenance: dict[tuple[str, str], str] = field(default_factory=dict)
@@ -104,6 +112,9 @@ class MergedRegistry:
         self.static_js.extend(reg.static_js)
         self.startup.extend((reg.name, fn) for fn in reg.startup)
         self.shutdown.extend((reg.name, fn) for fn in reg.shutdown)
+        self.session_post_processors.extend(
+            (reg.name, fn) for fn in reg.session_post_processors
+        )
 
     def _claim(self, kind: str, key: str, owner: str) -> None:
         existing = self._provenance.get((kind, key))

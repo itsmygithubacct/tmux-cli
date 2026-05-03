@@ -228,6 +228,7 @@ def load_enabled(
     core_post_routes: set[str] | None = None,
     core_cli_verbs: set[str] | None = None,
     core_version_override: str | None = None,
+    skip_names: set[str] | None = None,
 ) -> MergedRegistry:
     """Load every enabled extension; return the merged registry.
 
@@ -239,9 +240,16 @@ def load_enabled(
     Route / verb / slot collisions with core or between extensions DO
     raise — that's an operator-visible configuration problem, not a
     run-time hiccup to paper over.
+
+    ``skip_names`` is a per-session override: extensions named here are
+    treated as if disabled for this run regardless of ``extensions.json``.
+    Used by ``serve(enable_federation=False)`` to honor the
+    ``--no-federation`` CLI flag without flipping the persisted
+    enabled bit.
     """
     core_version = core_version_override or __version__
     enabled = _read_enabled()
+    skip = skip_names or set()
     # Pre-pass: prepend every enabled extension's dir to ``sys.path``
     # BEFORE any ``load_one()`` call runs. Extensions can then import
     # each other at module-load time without depending on alphabetical
@@ -250,6 +258,8 @@ def load_enabled(
     # of whether sandbox has been load_one'd yet.
     import sys as _sys
     for path in discover():
+        if path.name in skip:
+            continue
         if not enabled.get(path.name, {}).get("enabled"):
             continue
         ext_root = str(path.resolve())
@@ -258,6 +268,8 @@ def load_enabled(
     merged = MergedRegistry()
     for path in discover():
         name = path.name
+        if name in skip:
+            continue
         if not enabled.get(name, {}).get("enabled"):
             continue
         try:

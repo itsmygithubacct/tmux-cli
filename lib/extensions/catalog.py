@@ -68,4 +68,18 @@ KNOWN: dict[str, CatalogEntry] = {
         "pinned_ref": "v0.7.2-qr",
         "submodule_path": "extensions/qr",
     },
+    "federation": {
+        "name": "federation",
+        "label": "LAN federation",
+        "description": (
+            "Auto-discover other tmux-browse hosts on your LAN via "
+            "UDP beacon and aggregate their sessions in one dashboard. "
+            "Pairing is two-sided — both ends accept before any "
+            "session list is shared. Adds /api/peers + a Federation "
+            "Config card."
+        ),
+        "repo": "https://github.com/itsmygithubacct/tmux-browse-federation.git",
+        "pinned_ref": "v0.7.6.1-federation",
+        "submodule_path": "extensions/federation",
+    },
 }
