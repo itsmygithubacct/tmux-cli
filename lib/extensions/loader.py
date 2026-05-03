@@ -64,9 +64,12 @@ def load_one(path: Path, *, core_version: str) -> Registration:
             if isinstance(handlers, Registration):
                 reg.get_routes.update(handlers.get_routes)
                 reg.post_routes.update(handlers.post_routes)
+                reg.session_post_processors.extend(handlers.session_post_processors)
             elif isinstance(handlers, dict):
                 reg.get_routes.update(handlers.get("get_routes") or {})
                 reg.post_routes.update(handlers.get("post_routes") or {})
+                reg.session_post_processors.extend(
+                    handlers.get("session_post_processors") or [])
             else:
                 raise ExtensionLoadError(
                     manifest.name, "entry",
