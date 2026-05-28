@@ -9,7 +9,13 @@ import secrets
 import sys
 
 from .. import output, sessions
-from ..errors import SessionExists, SessionNotFound, TmuxFailed, UsageError
+from ..errors import (
+    SessionExists,
+    SessionNotFound,
+    Timeout,
+    TmuxFailed,
+    UsageError,
+)
 from ..targeting import Target
 from ._common import parse_target, require_target
 
@@ -103,6 +109,83 @@ def cmd_range(args: argparse.Namespace) -> int:
     return 0
 
 
+def _range_members(base: str, start: int = 1) -> list[str]:
+    """Existing ``<base>_<n>`` sessions, ordered by their numeric suffix.
+
+    Matches the naming ``tb range`` produces. Indices below ``start`` are
+    skipped (so you can resume a stagger partway through), and gaps in the
+    sequence are tolerated — we order by whatever members actually exist.
+    """
+    rx = re.compile(rf"^{re.escape(base)}_(\d+)$")
+    found: list[tuple[int, str]] = []
+    for s in sessions.list_sessions():
+        m = rx.match(s["name"])
+        if m:
+            n = int(m.group(1))
+            if n >= start:
+                found.append((n, s["name"]))
+    found.sort()
+    return [name for _, name in found]
+
+
+def cmd_stagger(args: argparse.Namespace) -> int:
+    # Exactly one of: a text line to type, or named key(s) to send.
+    if (args.text is None) == (args.key is None):
+        raise UsageError(
+            "provide either a text line to type or --key <KEY…> (not both)",
+        )
+
+    members = _range_members(args.name, args.start)
+    if not members:
+        raise SessionNotFound(
+            f"no sessions matching {args.name}_<n> "
+            f"(start index {args.start})",
+        )
+
+    desc = f"key {' '.join(args.key)}" if args.key else f"text {args.text!r}"
+    results: list[dict] = []
+    for i, name in enumerate(members):
+        t = Target(session=name)
+        if args.key:
+            ok, err = sessions.send_keys(t, *args.key)
+        else:
+            ok, err = sessions.type_line(t, args.text)
+        if not ok:
+            raise TmuxFailed(f"sending to {name}: {err}")
+
+        # Wait for this pane to settle before poking the next one. The last
+        # pane has no successor to gate, so we don't block on it (it may be
+        # an interactive process that never goes idle).
+        is_last = i == len(members) - 1
+        waited = False
+        if not is_last:
+            if not args.json and not args.quiet:
+                sys.stdout.write(f"{name}: sent {desc}; waiting for idle…\n")
+                sys.stdout.flush()
+            ok, err = sessions.wait_idle(
+                t, idle_sec=args.idle, timeout_sec=args.timeout,
+            )
+            if not ok:
+                if "timed out" in err:
+                    raise Timeout(f"{name}: {err}")
+                raise TmuxFailed(f"waiting on {name}: {err}")
+            waited = True
+        elif not args.json and not args.quiet:
+            sys.stdout.write(f"{name}: sent {desc}\n")
+            sys.stdout.flush()
+        results.append({"name": name, "waited_idle": waited})
+
+    if args.json:
+        output.emit_json({
+            "base": args.name,
+            "key": list(args.key) if args.key else None,
+            "text": args.text,
+            "idle_sec": args.idle,
+            "sessions": results,
+        })
+    return 0
+
+
 def cmd_kill(args: argparse.Namespace) -> int:
     # parse_target, not require_target — JSON mode treats "already gone" as
     # success (idempotent), so we need to detect absence ourselves.
@@ -183,6 +266,28 @@ def register(sub, common) -> None:
     p.add_argument("--no-log", action="store_true",
                    help="don't enable pipe-pane logging on the new sessions")
     p.set_defaults(func=cmd_range)
+
+    p = sub.add_parser(
+        "stagger",
+        help="send input to each <base>_N pane in turn, waiting for the "
+             "prior pane to go idle before the next",
+        parents=[common],
+    )
+    p.add_argument("text", nargs="?",
+                   help="text line to type (Enter appended) into each pane; "
+                        "omit and use --key to send named key(s) instead")
+    p.add_argument("--key", nargs="+", metavar="KEY",
+                   help="named key(s) to send instead of typing text "
+                        "(e.g. --key Enter, --key C-c)")
+    p.add_argument("--name", "-n", required=True,
+                   help="session base name (the <base> in <base>_N)")
+    p.add_argument("--idle", type=float, default=2.0,
+                   help="seconds of quiet that count as idle (default: 2)")
+    p.add_argument("--timeout", type=float, default=0,
+                   help="per-pane idle-wait timeout (0 = no timeout)")
+    p.add_argument("--start", type=int, default=1,
+                   help="lowest <base>_N index to include (default: 1)")
+    p.set_defaults(func=cmd_stagger)
 
     p = sub.add_parser("kill", help="kill a session (and any child processes)",
                        parents=[common])
