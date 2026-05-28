@@ -1,19 +1,34 @@
-"""Lifecycle verbs: new, kill, rename, attach."""
+"""Lifecycle verbs: new, kill, rename, attach, range."""
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import secrets
 import sys
 
 from .. import output, sessions
 from ..errors import SessionExists, SessionNotFound, TmuxFailed, UsageError
+from ..targeting import Target
 from ._common import parse_target, require_target
 
 
 def _auto_name() -> str:
     return "tb_" + secrets.token_hex(3)
+
+
+def _derive_base(command: str) -> str:
+    """Base session name from a command — first token, sanitized.
+
+    ``codex --yolo`` → ``codex``; ``./run-it.sh -x`` → ``run-it``. Strips to
+    the chars tmux session names tolerate (no whitespace, ':' or '.'), so the
+    result is always a valid prefix for ``<base>_<n>``.
+    """
+    token = command.split()[0] if command.split() else ""
+    token = os.path.basename(token)            # drop any leading path
+    token = re.sub(r"[^A-Za-z0-9_-]", "", token)
+    return token
 
 
 def cmd_new(args: argparse.Namespace) -> int:
@@ -41,6 +56,50 @@ def cmd_new(args: argparse.Namespace) -> int:
         print(name)
     if args.attach:
         os.execvp("tmux", ["tmux", "attach-session", "-t", f"={name}"])
+    return 0
+
+
+def cmd_range(args: argparse.Namespace) -> int:
+    if args.count < 1:
+        raise UsageError("count must be a positive integer")
+    base = args.name or _derive_base(args.command)
+    if not base:
+        raise UsageError(
+            "could not derive a session name from the command; "
+            "pass --name to set one explicitly",
+        )
+    start = args.start
+    names = [f"{base}_{i}" for i in range(start, start + args.count)]
+
+    # Pre-check so we don't half-create a batch and leave the user guessing.
+    clashes = [n for n in names if sessions.exists(n)]
+    if clashes:
+        raise SessionExists(
+            "these sessions already exist: " + ", ".join(clashes),
+        )
+
+    created: list[str] = []
+    for name in names:
+        ok, err = sessions.new_session(name, cwd=args.cwd,
+                                       enable_logging=not args.no_log)
+        if not ok:
+            raise TmuxFailed(f"creating {name}: {err}")
+        created.append(name)
+        if not args.no_run:
+            ok, err = sessions.type_line(Target(session=name), args.command)
+            if not ok:
+                raise TmuxFailed(f"sending command to {name}: {err}")
+
+    if args.json:
+        output.emit_json({
+            "base": base,
+            "count": args.count,
+            "command": None if args.no_run else args.command,
+            "created": created,
+        })
+    elif not args.quiet:
+        for name in created:
+            print(name)
     return 0
 
 
@@ -104,6 +163,26 @@ def register(sub, common) -> None:
                    help="don't enable pipe-pane logging "
                         "(disables hash-based idle detection for this session)")
     p.set_defaults(func=cmd_new)
+
+    p = sub.add_parser(
+        "range",
+        help="create N sessions (<base>_1..<base>_N) and run a command in each",
+        parents=[common],
+    )
+    p.add_argument("count", type=int, help="how many sessions to create")
+    p.add_argument("command",
+                   help="command to run in each session; its first word is "
+                        "the default session base name")
+    p.add_argument("--name", "-n",
+                   help="session base name (default: first word of command)")
+    p.add_argument("--start", type=int, default=1,
+                   help="first index for the numeric suffix (default: 1)")
+    p.add_argument("--cwd", help="starting directory for every session")
+    p.add_argument("--no-run", action="store_true",
+                   help="create the sessions but don't run the command")
+    p.add_argument("--no-log", action="store_true",
+                   help="don't enable pipe-pane logging on the new sessions")
+    p.set_defaults(func=cmd_range)
 
     p = sub.add_parser("kill", help="kill a session (and any child processes)",
                        parents=[common])
