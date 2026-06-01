@@ -25,6 +25,23 @@ class _IsolatedLogDir:
         self._tmp.cleanup()
 
 
+class LogPathSanitizationTests(_IsolatedLogDir, unittest.TestCase):
+
+    def test_plain_name_passes_through_unchanged(self):
+        # Alphanumeric names keep their old path — existing logs aren't orphaned.
+        self.assertEqual(session_logs.log_path("work").name, "work.log")
+
+    def test_path_significant_chars_are_encoded(self):
+        # A name with '/' must not escape LOG_DIR or imply a missing subdir;
+        # it stays a single basename directly under LOG_DIR.
+        p = session_logs.log_path("foo/bar")
+        self.assertEqual(p.parent, session_logs.LOG_DIR)
+        self.assertNotIn("/", p.name[: -len(".log")])
+        # Distinct names never collide on basename.
+        self.assertNotEqual(session_logs.log_path("foo/bar"),
+                            session_logs.log_path("foo_bar"))
+
+
 class ActivityTsTests(_IsolatedLogDir, unittest.TestCase):
 
     def test_returns_none_when_no_log(self):

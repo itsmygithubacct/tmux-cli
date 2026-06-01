@@ -185,10 +185,13 @@ def list_panes() -> list[PaneInfo]:
 
 
 def exists(session: str) -> bool:
-    r = subprocess.run(
-        ["tmux", "has-session", "-t", f"={session}"],
-        capture_output=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "has-session", "-t", f"={session}"],
+            capture_output=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
     return r.returncode == 0
 
 
@@ -204,10 +207,15 @@ def _validate_name(name: str) -> None:
 
 
 def kill(session: str) -> tuple[bool, str]:
-    r = subprocess.run(
-        ["tmux", "kill-session", "-t", f"={session}"],
-        capture_output=True, text=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "kill-session", "-t", f"={session}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode == 0:
         return True, ""
     return False, (r.stderr or r.stdout).strip()
@@ -229,7 +237,12 @@ def new_session(name: str, cwd: str | None = None, cmd: str | None = None,
         args += ["-c", cwd]
     if cmd:
         args.append(cmd)
-    r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    try:
+        r = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode == 0:
         if enable_logging:
             try:
@@ -247,10 +260,15 @@ def rename(old: str, new_name: str) -> tuple[bool, str]:
         return False, f"no such session: {old}"
     if exists(new_name):
         return False, f"session '{new_name}' already exists"
-    r = subprocess.run(
-        ["tmux", "rename-session", "-t", f"={old}", new_name],
-        capture_output=True, text=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "rename-session", "-t", f"={old}", new_name],
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode == 0:
         return True, ""
     return False, (r.stderr or r.stdout).strip()
@@ -269,18 +287,26 @@ def capture_target(target: Target, lines: int = 2000,
            "-p", "-J", "-S", f"-{lines}"]
     if ansi:
         cmd.append("-e")
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
     return True, r.stdout
 
 
 def session_activity(target: Target) -> int | None:
-    r = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", target.as_tmux_target(),
-         "#{session_activity}"],
-        capture_output=True, text=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", target.as_tmux_target(),
+             "#{session_activity}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
     if r.returncode != 0:
         return None
     try:
@@ -290,11 +316,14 @@ def session_activity(target: Target) -> int | None:
 
 
 def pane_current_command(target: Target) -> str | None:
-    r = subprocess.run(
-        ["tmux", "display-message", "-p", "-t", target.as_tmux_target(),
-         "#{pane_current_command}"],
-        capture_output=True, text=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "display-message", "-p", "-t", target.as_tmux_target(),
+             "#{pane_current_command}"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
     if r.returncode != 0:
         return None
     return r.stdout.strip() or None
@@ -308,10 +337,15 @@ def enter_copy_mode(session: str) -> tuple[bool, str]:
     """Invoke the ``C-b [`` binding (put active pane into copy-mode)."""
     if not exists(session):
         return False, f"no such session: {session}"
-    r = subprocess.run(
-        ["tmux", "copy-mode", "-t", f"{session}:"],
-        capture_output=True, text=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "copy-mode", "-t", f"{session}:"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
     return True, ""
@@ -325,10 +359,15 @@ def zoom_pane(session: str) -> tuple[bool, str]:
     """
     if not exists(session):
         return False, f"no such session: {session}"
-    r = subprocess.run(
-        ["tmux", "resize-pane", "-t", f"{session}:", "-Z"],
-        capture_output=True, text=True, timeout=5,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "resize-pane", "-t", f"{session}:", "-Z"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
     return True, ""
@@ -338,10 +377,15 @@ def send_literal(target: Target, text: str) -> tuple[bool, str]:
     """Send ``text`` verbatim. Newlines in ``text`` become literal newlines."""
     if not exists(target.session):
         return False, f"no such session: {target.session}"
-    r = subprocess.run(
-        ["tmux", "send-keys", "-t", target.as_tmux_target(), "-l", "--", text],
-        capture_output=True, text=True, timeout=10,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "send-keys", "-t", target.as_tmux_target(), "-l", "--", text],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
     return True, ""
@@ -351,10 +395,15 @@ def send_keys(target: Target, *keys: str) -> tuple[bool, str]:
     """Send one or more tmux key names (e.g. ``Enter``, ``C-c``, ``F5``)."""
     if not exists(target.session):
         return False, f"no such session: {target.session}"
-    r = subprocess.run(
-        ["tmux", "send-keys", "-t", target.as_tmux_target(), *keys],
-        capture_output=True, text=True, timeout=10,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "send-keys", "-t", target.as_tmux_target(), *keys],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
     return True, ""
@@ -374,16 +423,26 @@ def paste_buffer(target: Target, text: str) -> tuple[bool, str]:
     if not exists(target.session):
         return False, f"no such session: {target.session}"
     # ``load-buffer -`` reads text from stdin into an auto-named buffer.
-    r = subprocess.run(
-        ["tmux", "load-buffer", "-"],
-        input=text, capture_output=True, text=True, timeout=10,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "load-buffer", "-"],
+            input=text, capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
-    r = subprocess.run(
-        ["tmux", "paste-buffer", "-d", "-t", target.as_tmux_target()],
-        capture_output=True, text=True, timeout=10,
-    )
+    try:
+        r = subprocess.run(
+            ["tmux", "paste-buffer", "-d", "-t", target.as_tmux_target()],
+            capture_output=True, text=True, timeout=10,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
     return True, ""
