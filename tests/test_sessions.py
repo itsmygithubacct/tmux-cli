@@ -1,6 +1,7 @@
 """Session enumeration — primarily the group-dedup logic that hides
 ttyd_wrap.sh's per-viewer grouped sessions from the dashboard and CLI."""
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -78,6 +79,33 @@ class ListSessionsDedupTests(unittest.TestCase):
         out = self._run(rows)
         self.assertEqual(out[0]["attached"], 3)
         self.assertEqual(out[0]["activity"], 2500)
+
+
+class TimeoutHandlingTests(unittest.TestCase):
+
+    def test_exists_returns_false_on_timeout(self):
+        with mock.patch(
+            "lib.sessions.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="tmux", timeout=5),
+        ):
+            self.assertFalse(sessions.exists("demo"))
+
+    def test_kill_returns_error_on_timeout(self):
+        with mock.patch(
+            "lib.sessions.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="tmux", timeout=5),
+        ):
+            ok, err = sessions.kill("demo")
+        self.assertFalse(ok)
+        self.assertIn("timed out", err)
+
+    def test_pane_current_command_returns_none_on_timeout(self):
+        with mock.patch(
+            "lib.sessions.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="tmux", timeout=5),
+        ):
+            cmd = sessions.pane_current_command(sessions.Target(session="demo"))
+        self.assertIsNone(cmd)
 
 
 if __name__ == "__main__":

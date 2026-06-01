@@ -85,16 +85,24 @@ def cmd_range(args: argparse.Namespace) -> int:
         )
 
     created: list[str] = []
+
+    def _so_far() -> str:
+        # Mid-batch failures leave the already-created sessions in place
+        # (we don't roll back work that may already be running). Name them
+        # so the operator can clean up instead of guessing — the pre-check
+        # above only covers the all-clash case.
+        return f" (created so far: {', '.join(created)})" if created else ""
+
     for name in names:
         ok, err = sessions.new_session(name, cwd=args.cwd,
                                        enable_logging=not args.no_log)
         if not ok:
-            raise TmuxFailed(f"creating {name}: {err}")
+            raise TmuxFailed(f"creating {name}: {err}{_so_far()}")
         created.append(name)
         if not args.no_run:
             ok, err = sessions.type_line(Target(session=name), args.command)
             if not ok:
-                raise TmuxFailed(f"sending command to {name}: {err}")
+                raise TmuxFailed(f"sending command to {name}: {err}{_so_far()}")
 
     if args.json:
         output.emit_json({

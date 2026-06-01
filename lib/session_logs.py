@@ -18,12 +18,26 @@ import hashlib
 import shlex
 import subprocess
 import time
+import urllib.parse
 from pathlib import Path
 
 from . import config
 
 
 LOG_DIR = config.STATE_DIR / "session-logs"
+
+
+def _safe(name: str) -> str:
+    """Reversible, collision-free basename for a session name.
+
+    Mirrors ``ttyd._safe``: percent-encodes every byte outside
+    ``[A-Za-z0-9_-]`` so a name containing ``/`` (or other path-significant
+    characters tmux permits but ``sessions._validate_name`` doesn't block)
+    can't escape ``LOG_DIR`` or point at a non-existent subdirectory.
+    Alphanumeric names pass through unchanged, so existing logs keep their
+    paths.
+    """
+    return urllib.parse.quote(name, safe="-_")
 
 # How many trailing bytes of the log are hashed for change-detection.
 # Small enough to stay fast on large logs; large enough that a single
@@ -41,7 +55,7 @@ _hash_state: dict[str, tuple[str, int]] = {}
 
 
 def log_path(session: str) -> Path:
-    return LOG_DIR / f"{session}.log"
+    return LOG_DIR / f"{_safe(session)}.log"
 
 
 def _ensure_dir() -> None:
