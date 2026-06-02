@@ -217,6 +217,33 @@ class UninstallTests(_IsolatedExt, unittest.TestCase):
         self.assertEqual(result["state_removed"], ["agents.json"])
         self.assertEqual(result["state_missing"], ["absent.json"])
 
+    def test_remove_state_refuses_to_delete_state_root(self):
+        # A manifest listing "." (or any path resolving back to STATE_DIR)
+        # must NOT wipe the whole state dir — other extensions' state, the
+        # port registry, dashboard config all live there.
+        self._install_fake("0.7.1", state_paths=["."])
+        state = Path(self._state.name)
+        (state / "ports.json").write_text("{}")
+        (state / "agent-logs").mkdir()
+        result = extensions.uninstall("agent", remove_state=True)
+        # "." is rejected by the safety rail, so nothing under the root dies.
+        self.assertEqual(result["state_removed"], [])
+        self.assertTrue(state.is_dir())
+        self.assertTrue((state / "ports.json").is_file())
+        self.assertTrue((state / "agent-logs").is_dir())
+
+    def test_remove_state_refuses_path_traversal(self):
+        # An escaping relative path is dropped, not followed.
+        self._install_fake("0.7.1", state_paths=["../escape.json"])
+        outside = Path(self._state.name).parent / "escape.json"
+        outside.write_text("secret")
+        try:
+            result = extensions.uninstall("agent", remove_state=True)
+            self.assertEqual(result["state_removed"], [])
+            self.assertTrue(outside.exists())
+        finally:
+            outside.unlink(missing_ok=True)
+
     def test_submodule_path_calls_deinit_not_rmtree(self):
         self._install_fake("0.7.1", submodule=True)
         target = self._ext_root / "agent"
