@@ -17,6 +17,7 @@ backend for the Config pane's **Download and enable** button.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import time
@@ -39,6 +40,8 @@ EXTENSIONS_ROOT: Path = config.PROJECT_DIR / "extensions"
 # extension state doesn't mingle with UI preferences.
 ENABLED_FILE: Path = config.STATE_DIR / "extensions.json"
 
+_EXTENSION_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
 
 __all__ = [
     "ExtensionLoadError",
@@ -51,6 +54,7 @@ __all__ = [
     "InstallResult",
     "UpdateError",
     "UpdateResult",
+    "InvalidExtensionName",
     "EXTENSIONS_ROOT",
     "ENABLED_FILE",
     "CATALOG",
@@ -100,6 +104,10 @@ class UpdateError(RuntimeError):
         super().__init__(f"{stage}: {msg}")
         self.stage = stage
         self.msg = msg
+
+
+class InvalidExtensionName(ValueError):
+    """Raised when a caller supplies a name that is not a single basename."""
 
 
 @dataclass
@@ -192,6 +200,7 @@ def status() -> list[dict[str, Any]]:
 
 
 def enable(name: str) -> dict[str, Any]:
+    name = _validate_extension_name(name)
     data = _read_enabled()
     entry = data.get(name, {})
     entry["enabled"] = True
@@ -203,6 +212,7 @@ def enable(name: str) -> dict[str, Any]:
 
 
 def disable(name: str) -> dict[str, Any]:
+    name = _validate_extension_name(name)
     data = _read_enabled()
     entry = data.get(name, {})
     entry["enabled"] = False
@@ -214,12 +224,48 @@ def disable(name: str) -> dict[str, Any]:
 
 def record_error(name: str, message: str) -> None:
     """Persist an error message against an extension so the Config
-    pane's status card can show it without re-running the load."""
+    pane's status card can show it without re-running the load.
+
+    Unlike the request-reachable mutators (enable/disable/install/...),
+    this is called during startup load (``load_enabled``) and the
+    per-request post-processor error path with names that come from the
+    filesystem or an extension's own manifest — not from a validated
+    request. It must therefore never raise on an odd name: it only writes
+    a JSON dict key (no filesystem path is derived from it here), and a
+    single badly-named extension dir must not be allowed to crash
+    ``load_enabled`` or 500 a ``/api/sessions`` request. Record under the
+    raw name; skip only the empty case.
+    """
+    name = (name or "").strip()
+    if not name:
+        return
     data = _read_enabled()
     entry = data.get(name, {})
     entry["last_error"] = message
     data[name] = entry
     _write_enabled(data)
+
+
+def _validate_extension_name(name: str) -> str:
+    name = (name or "").strip()
+    if not _EXTENSION_NAME_RE.fullmatch(name):
+        raise InvalidExtensionName(
+            "extension name must contain only letters, numbers, '_' or '-'")
+    return name
+
+
+def _extension_path(name: str) -> Path:
+    """Return the on-disk extension path after enforcing containment."""
+    clean = _validate_extension_name(name)
+    root = EXTENSIONS_ROOT.resolve()
+    path = (EXTENSIONS_ROOT / clean).resolve()
+    if path == root:
+        raise InvalidExtensionName("extension path resolves to the extensions root")
+    try:
+        path.relative_to(root)
+    except ValueError as e:
+        raise InvalidExtensionName("extension path escapes the extensions directory") from e
+    return path
 
 
 def load_enabled(
@@ -311,10 +357,11 @@ def install(name: str, spec: dict | None = None, *,
     the caller does that so the button text and failure surface stay
     orthogonal.
     """
+    name = _validate_extension_name(name)
     spec = spec or CATALOG.get(name)
     if spec is None:
         raise InstallError("unknown", f"{name!r} is not in the catalog")
-    path = EXTENSIONS_ROOT / name
+    path = _extension_path(name)
     if submodule.is_submodule_path(name):
         ok, stderr = submodule.submodule_init(name, timeout=clone_timeout)
         if not ok:
@@ -395,10 +442,11 @@ def update(name: str, *, core_version: str | None = None,
     Returns :class:`UpdateResult` with ``changed=False`` when the
     version didn't move so the UI can report "already up to date".
     """
+    name = _validate_extension_name(name)
     spec = CATALOG.get(name)
     if spec is None:
         raise UpdateError("unknown", f"{name!r} is not in the catalog")
-    path = EXTENSIONS_ROOT / name
+    path = _extension_path(name)
     if not (path / "manifest.json").is_file():
         raise UpdateError(
             "missing",
@@ -467,7 +515,8 @@ def uninstall(name: str, *, remove_state: bool = False) -> dict[str, Any]:
     (list of paths that existed and were deleted), ``state_missing``
     (paths listed in the manifest that weren't on disk), and ``via``.
     """
-    path = EXTENSIONS_ROOT / name
+    name = _validate_extension_name(name)
+    path = _extension_path(name)
     state_paths: list[str] = []
     if (path / "manifest.json").is_file():
         try:

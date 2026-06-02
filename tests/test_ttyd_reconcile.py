@@ -142,6 +142,31 @@ class ReconcilePidfileTests(_StateDirMixin, unittest.TestCase):
         self.assertEqual((self._dir / "pids" / "work.scheme").read_text(), "https\n")
 
 
+class SpawnPortConflictTests(_StateDirMixin, unittest.TestCase):
+
+    def test_port_in_use_without_matching_ttyd_is_error(self):
+        from lib import ttyd
+        with mock.patch.object(ttyd, "_port_listening_on", return_value=True), \
+             mock.patch.object(ttyd, "_scan_ttyd_for_session", return_value=None):
+            result = ttyd._spawn_ttyd("work", 7715, ["bash"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["port"], 7715)
+        self.assertIn("already in use", result["error"])
+        self.assertFalse((self._dir / "pids" / "work.pid").exists())
+
+    def test_port_in_use_with_matching_ttyd_reconciles_state(self):
+        from lib import ttyd
+        with mock.patch.object(ttyd, "_port_listening_on", return_value=True), \
+             mock.patch.object(ttyd, "_scan_ttyd_for_session", return_value=4242), \
+             mock.patch.object(ttyd, "_scheme_from_argv", return_value="https"):
+            result = ttyd._spawn_ttyd("work", 7715, ["bash"])
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["already"])
+        self.assertEqual(result["pid"], 4242)
+        self.assertEqual((self._dir / "pids" / "work.pid").read_text(), "4242\n")
+        self.assertEqual((self._dir / "pids" / "work.scheme").read_text(), "https\n")
+
+
 class ReadPidReconcilesTests(_StateDirMixin, unittest.TestCase):
     """``read_pid`` must invoke reconciliation when the pidfile is gone."""
 

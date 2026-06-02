@@ -244,6 +244,14 @@ class UninstallTests(_IsolatedExt, unittest.TestCase):
         finally:
             outside.unlink(missing_ok=True)
 
+    def test_uninstall_rejects_extension_name_path_traversal(self):
+        outside = self._project / "outside"
+        outside.mkdir()
+        (outside / "keep.txt").write_text("secret")
+        with self.assertRaises(extensions.InvalidExtensionName):
+            extensions.uninstall("../outside")
+        self.assertTrue((outside / "keep.txt").exists())
+
     def test_submodule_path_calls_deinit_not_rmtree(self):
         self._install_fake("0.7.1", submodule=True)
         target = self._ext_root / "agent"
@@ -269,6 +277,45 @@ class UninstallTests(_IsolatedExt, unittest.TestCase):
         self.assertFalse(result["state_removed"])
         entry = extensions._read_enabled()["agent"]
         self.assertFalse(entry["enabled"])
+
+
+class RecordErrorResilienceTests(_IsolatedExt, unittest.TestCase):
+    """``record_error`` is called during startup load and per-request
+    post-processor handling with filesystem-/manifest-derived names, so it
+    must never raise on an odd name — otherwise one badly-named extension
+    dir takes down ``load_enabled`` (server startup) or 500s a request."""
+
+    def test_record_error_tolerates_non_basename(self):
+        # A name with a dot (e.g. a leftover ``agent.bak`` copy) is not a
+        # clean basename, but record_error only writes a JSON key.
+        extensions.record_error("agent.bak", "boom")
+        self.assertEqual(
+            extensions._read_enabled()["agent.bak"]["last_error"], "boom")
+
+    def test_record_error_ignores_empty_name(self):
+        extensions.record_error("   ", "boom")
+        self.assertEqual(extensions._read_enabled(), {})
+
+    def test_load_enabled_survives_oddly_named_extension(self):
+        # An *enabled* extension dir whose name isn't a clean basename and
+        # that fails to load must be recorded-and-skipped, not crash
+        # load_enabled via record_error.
+        ext = self._ext_root / "agent.bak"
+        ext.mkdir()
+        (ext / "manifest.json").write_text(json.dumps({
+            "name": "agent.bak",
+            "version": "0.0.1",
+            "module": "nope_missing_module",
+            "min_tmux_browse": "0.7.1",
+            # Import target doesn't exist → ExtensionLoadError at load time.
+            "routes_entry": "nope_missing_module:register",
+        }))
+        extensions._write_enabled({"agent.bak": {"enabled": True}})
+        # Must not raise.
+        extensions.load_enabled(core_version_override="0.7.1")
+        # The load failure was recorded under the raw name.
+        entry = extensions._read_enabled()["agent.bak"]
+        self.assertIsNotNone(entry.get("last_error"))
 
 
 class CLIDriverTests(_IsolatedExt, unittest.TestCase):
