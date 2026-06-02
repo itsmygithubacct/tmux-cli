@@ -37,6 +37,12 @@ def cmd_watch(args: argparse.Namespace) -> int:
     last_hash = None
     try:
         while True:
+            # Sleep at the top of the loop so that *every* iteration — including
+            # the `continue` taken when capture fails but the session is still
+            # alive — pays the poll interval. Sleeping only at the bottom let a
+            # transient capture failure spin the loop at 100% CPU, hammering
+            # tmux exactly when it's already struggling.
+            time.sleep(args.interval)
             ok, content = sessions.capture_target(t, lines=args.lines)
             if not ok:
                 # Session may have gone away.
@@ -65,7 +71,6 @@ def cmd_watch(args: argparse.Namespace) -> int:
                     }), flush=True)
                 else:
                     print(f"[{_now_iso()}] {last_line}", flush=True)
-            time.sleep(args.interval)
     except KeyboardInterrupt:
         return 0
 
