@@ -505,11 +505,19 @@ def uninstall(name: str, *, remove_state: bool = False) -> dict[str, Any]:
     state_removed: list[str] = []
     state_missing: list[str] = []
     if remove_state:
+        state_root = config.STATE_DIR.resolve()
         for rel in state_paths:
             target = (config.STATE_DIR / rel).resolve()
-            # Safety rail: never delete outside STATE_DIR.
+            # Safety rail: only remove STRICT descendants of STATE_DIR.
+            # ``relative_to`` alone accepts the root itself — a manifest
+            # listing "." (or any path that resolves back to STATE_DIR)
+            # would otherwise rmtree the entire state dir: every other
+            # extension's state, the port registry, dashboard config, the
+            # device id. Reject anything that isn't strictly below the root.
+            if target == state_root:
+                continue
             try:
-                target.relative_to(config.STATE_DIR.resolve())
+                target.relative_to(state_root)
             except ValueError:
                 continue
             if not target.exists():
