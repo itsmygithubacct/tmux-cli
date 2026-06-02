@@ -384,7 +384,23 @@ def _spawn_ttyd(name: str, port: int, argv_tail: list[str],
     probe_host = _probe_host(bind_addr)
 
     if _port_listening_on(port, probe_host):
-        return {"ok": True, "port": port, "already": True, "note": "port already in use"}
+        pid = _scan_ttyd_for_session(name)
+        if pid is not None:
+            scheme = _scheme_from_argv(pid)
+            try:
+                _atomic_write(_pidfile(name), f"{pid}\n")
+                _atomic_write(_schemefile(name), f"{scheme}\n")
+            except OSError:
+                pass
+            return {"ok": True, "pid": pid, "port": port, "already": True,
+                    "scheme": scheme, "name": name}
+        return {
+            "ok": False,
+            "port": port,
+            "error": (
+                f"port {port} is already in use by a process tmux-browse "
+                "cannot identify as this session's ttyd"),
+        }
 
     ttyd = config.ttyd_executable()
     argv = [ttyd, "-p", str(port)]
