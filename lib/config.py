@@ -1,13 +1,23 @@
-"""Shared paths and defaults for tmux-browse."""
+"""Shared paths and defaults for tmux-cli / tmux-browse."""
 
+import os
 from pathlib import Path
 
 DASHBOARD_PORT = 8096
 TTYD_PORT_START = 7700
 TTYD_PORT_END = 7799  # inclusive — 100 slots
 
-PROJECT_DIR = Path(__file__).resolve().parent.parent
-TTYD_WRAP = PROJECT_DIR / "bin" / "ttyd_wrap.sh"
+# Where the core package and its bundled scripts live (this repo, or the
+# vendored submodule when embedded).
+_CORE_DIR = Path(__file__).resolve().parent.parent
+# The *consuming project* root — where ``extensions/`` and ``.gitmodules`` live.
+# Standalone (tmux-cli) it equals the core dir; when this package is embedded as
+# a submodule the host (e.g. tmux-browse) sets ``TB_PROJECT_DIR`` to its own
+# root so extension discovery/install target the host project, not the core.
+PROJECT_DIR = (Path(os.environ["TB_PROJECT_DIR"]).resolve()
+               if os.environ.get("TB_PROJECT_DIR") else _CORE_DIR)
+# Bundled core scripts always live alongside the core package.
+TTYD_WRAP = _CORE_DIR / "bin" / "ttyd_wrap.sh"
 
 STATE_DIR = Path.home() / ".tmux-browse"
 PORTS_FILE = STATE_DIR / "ports.json"
