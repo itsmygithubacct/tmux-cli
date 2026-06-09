@@ -79,9 +79,16 @@ def server_running() -> bool:
     if r.returncode == 0:
         return True
     stderr = (r.stderr or "").lower()
-    # "no server running on /tmp/tmux-1000/default" → no socket.
-    # Anything else (e.g. "no sessions") → server present but empty.
-    return "no server" not in stderr
+    # tmux reports a missing/unreachable server several ways depending on
+    # whether the socket file is merely absent or a stale dead socket:
+    #   "no server running on /tmp/tmux-1000/default"        (server exited)
+    #   "error connecting to /tmp/.../default (No such file…)" (never started)
+    #   "failed to connect to server"                         (older tmux)
+    # Any of these means "no usable server". A non-zero exit with none of them
+    # (e.g. "no sessions") means the server is up but empty.
+    no_server_markers = ("no server", "error connecting",
+                          "no such file", "failed to connect")
+    return not any(marker in stderr for marker in no_server_markers)
 
 
 def server_responsive(timeout: float = 2.0) -> bool:

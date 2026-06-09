@@ -167,7 +167,8 @@ def register(sub, common) -> None:
                         "(overrides --running)")
     p.add_argument("--attached", action="store_true",
                    help="only sessions with at least one attached client")
-    p.set_defaults(func=cmd_ls)
+    # `ls` is meaningful with zero sessions / no server (prints an empty list).
+    p.set_defaults(func=cmd_ls, needs_server=False)
 
     p = sub.add_parser("show", help="show session detail (windows, panes)",
                        parents=[common])
@@ -195,4 +196,5 @@ def register(sub, common) -> None:
     p = sub.add_parser("exists", help="exit 0 if the session exists, else 3",
                        parents=[common])
     p.add_argument("target")
-    p.set_defaults(func=cmd_exists)
+    # The cheapest existence probe must answer even with no server (-> exit 3).
+    p.set_defaults(func=cmd_exists, needs_server=False)
