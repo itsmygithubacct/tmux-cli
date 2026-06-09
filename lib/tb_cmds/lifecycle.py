@@ -253,7 +253,8 @@ def register(sub, common) -> None:
     p.add_argument("--no-log", action="store_true",
                    help="don't enable pipe-pane logging "
                         "(disables hash-based idle detection for this session)")
-    p.set_defaults(func=cmd_new)
+    # `new` bootstraps a server when none is running.
+    p.set_defaults(func=cmd_new, needs_server=False)
 
     p = sub.add_parser(
         "range",
@@ -273,7 +274,8 @@ def register(sub, common) -> None:
                    help="create the sessions but don't run the command")
     p.add_argument("--no-log", action="store_true",
                    help="don't enable pipe-pane logging on the new sessions")
-    p.set_defaults(func=cmd_range)
+    # `range` bootstraps a server when none is running.
+    p.set_defaults(func=cmd_range, needs_server=False)
 
     p = sub.add_parser(
         "stagger",

@@ -291,6 +291,39 @@ NAME=$(tb new --auto)                 # for scripts/agents
 
 Exits 4 (`EEXIST`) if the name is taken; 2 (`EUSAGE`) for invalid names.
 
+#### `tb range <count> <command> [--name BASE] [--start I] [--cwd DIR] [--no-run] [--no-log]`
+
+Batch-creates `count` sessions named `<base>_1 .. <base>_N` and runs
+`command` in each. The base name defaults to the first word of `command`;
+override with `--name`/`-n`. `--start` shifts the first numeric suffix
+(default 1). `--cwd` sets the starting directory for every session;
+`--no-run` creates the sessions but skips running the command; `--no-log`
+opts out of pipe-pane logging. Pre-checks for name clashes and, on a
+mid-batch failure, reports the sessions created so far. Bootstraps a tmux
+server if none is running.
+
+```bash
+tb range 4 "pytest -q"                 # pytest_1..pytest_4, each runs pytest
+tb range 3 "make watch" --name build --start 0
+NAMES=$(tb range 5 "bash" --no-run --json | jq -r '.data.sessions[]')
+```
+
+#### `tb stagger (<text> | --key KEY...) --name BASE [--idle SEC] [--timeout SEC] [--start I]`
+
+Drives an existing `<base>_N` range group **one idle pane at a time**: sends
+input to the first member, waits for that pane to fall idle, then moves to
+the next. Provide exactly one of a positional `text` line (Enter appended) or
+`--key` with one or more named keys (`--key Enter`, `--key C-c`). `--name`/`-n`
+selects the `<base>`; `--idle` is the quiet window that counts as idle
+(default 2s); `--timeout` is the per-pane idle-wait deadline (0 = no timeout);
+`--start` is the lowest index to include. The last pane is not waited on (it
+may be a long-running interactive process).
+
+```bash
+tb stagger "make deploy" --name build          # type into build_1, build_2, … in turn
+tb stagger --key C-c --name build              # send Ctrl-C to each in sequence
+```
+
 #### `tb kill <target> [-f]`
 
 Kills the tmux session. Requires `-f`/`--force` when stdout is a TTY.

@@ -78,12 +78,15 @@ def register(sub, common) -> None:
                          help="TLS key for ttyd. Also honours $TMUX_BROWSE_KEY.")
     p_start.set_defaults(func=cmd_web_start)
 
+    # `stop` only signals a ttyd PID and `url` only reads the ports registry;
+    # neither touches tmux, so they must not be gated on a running server.
+    # `start` calls sessions.exists(), so it keeps the default server gate.
     p_stop = wsub.add_parser("stop", help="stop the ttyd for a session",
                              parents=[common])
     p_stop.add_argument("session")
-    p_stop.set_defaults(func=cmd_web_stop)
+    p_stop.set_defaults(func=cmd_web_stop, needs_server=False)
 
     p_url = wsub.add_parser("url", help="print the ttyd URL (if assigned)",
                             parents=[common])
     p_url.add_argument("session")
-    p_url.set_defaults(func=cmd_web_url)
+    p_url.set_defaults(func=cmd_web_url, needs_server=False)
