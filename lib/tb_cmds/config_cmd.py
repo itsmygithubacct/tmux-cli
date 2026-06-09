@@ -25,11 +25,6 @@ def _check_config_lock() -> None:
         raise UsageError("wrong config password")
 
 
-class _Parser(argparse.ArgumentParser):
-    def error(self, message):
-        raise UsageError(message)
-
-
 def _valid_keys() -> set[str]:
     return set(dashboard_config.DEFAULTS)
 
@@ -123,4 +118,6 @@ def register(sub, common) -> None:
     p_reset = csub.add_parser("reset", help="write built-in dashboard config defaults", parents=[common])
     p_reset.set_defaults(func=cmd_config_reset)
 
-    p.set_defaults(func=cmd_config_show)
+    # `config` edits ~/.tmux-browse/dashboard-config.json — no tmux server
+    # needed. The default handler makes bare `tb config` print the config.
+    p.set_defaults(func=cmd_config_show, needs_server=False)
