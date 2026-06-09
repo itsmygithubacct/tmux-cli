@@ -29,7 +29,8 @@ _SCRIPT_DIR = Path(__file__).resolve().parent
 if str(_SCRIPT_DIR) not in sys.path:
     sys.path.append(str(_SCRIPT_DIR))
 
-from lib import __version__, output, sessions
+from lib.version import __version__
+from lib import output, sessions
 from lib.errors import NoTmuxServer, TBError, UsageError
 from lib.tb_cmds import register_all
 

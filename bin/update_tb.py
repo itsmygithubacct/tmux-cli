@@ -1,14 +1,13 @@
 #!/usr/bin/env python3
 """Standalone puller for the ``tb`` CLI — fetches tb.py (and the lib/
-package it needs) from a tmux-browse GitHub release, no git required.
+package it needs) from a tmux-cli GitHub release, no git required.
 
-Unlike ``bin/update.sh`` (which advances a full git checkout in place),
-this script depends on nothing but the Python standard library, so you can
+This script depends on nothing but the Python standard library, so you can
 copy it anywhere — or curl it straight down — and use it to drop a working
 ``tb`` into a directory that isn't a git clone:
 
-    curl -fsSL https://raw.githubusercontent.com/itsmygithubacct/tmux-browse/main/bin/update_tb.py -o update_tb.py
-    python3 update_tb.py --dir ~/bin/tmux-browse
+    curl -fsSL https://raw.githubusercontent.com/itsmygithubacct/tmux-cli/main/bin/update_tb.py -o update_tb.py
+    python3 update_tb.py --dir ~/bin/tmux-cli
 
 ``tb.py`` imports the ``lib`` package, so by default this pulls both
 ``tb.py`` and ``lib/`` (a runnable CLI). Pass ``--file-only`` if you only
@@ -38,8 +37,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_REPO = "itsmygithubacct/tmux-browse"
-_UA = {"User-Agent": "tmux-browse-update_tb"}
+DEFAULT_REPO = "itsmygithubacct/tmux-cli"
+_UA = {"User-Agent": "tmux-cli-update_tb"}
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE)
 
 
@@ -131,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
 
     local_tb = dest / "tb.py"
     local_ver = None
-    local_lib = dest / "lib" / "__init__.py"
+    local_lib = dest / "lib" / "version.py"
     if local_lib.is_file():
         local_ver = _version_of(local_lib.read_text(encoding="utf-8"))
     _say(f"repo {args.repo}  ref {ref}")
@@ -153,7 +152,7 @@ def main(argv: list[str] | None = None) -> int:
         if tb_text is None:
             return _die(f"tb.py not found in {args.repo}@{ref}")
         pulled_ver = _version_of(
-            _extract_member_text(tf, root, "lib/__init__.py") or "")
+            _extract_member_text(tf, root, "lib/version.py") or "")
         _say(f"available: {pulled_ver or '?'}")
 
         if args.check:

@@ -25,7 +25,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .. import __version__, config
+from ..version import __version__
+from .. import config
 from .catalog import KNOWN as CATALOG
 from .loader import ExtensionLoadError, load_one
 from .manifest import Manifest, ManifestError
