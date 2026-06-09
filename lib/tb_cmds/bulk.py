@@ -135,7 +135,8 @@ def register(sub, common) -> None:
     p.add_argument("--human", action="store_true",
                    help="terse human summary instead of JSON "
                         "(ignored when --json is also set)")
-    p.set_defaults(func=cmd_snapshot)
+    # snapshot reports tmux_server:false rather than erroring when no server.
+    p.set_defaults(func=cmd_snapshot, needs_server=False)
 
     p = sub.add_parser(
         "describe",
