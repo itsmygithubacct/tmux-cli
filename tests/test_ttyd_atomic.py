@@ -8,7 +8,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib.ttyd import _atomic_write, _safe, _start_lock, _unsafe  # noqa: E402
+import lib.ttyd as ttyd  # noqa: E402
+from lib.ttyd import (  # noqa: E402
+    _atomic_write, _discard_start_lock, _safe, _start_lock, _unsafe,
+)
 
 
 class AtomicWriteTests(unittest.TestCase):
@@ -75,6 +78,56 @@ class StartLockTests(unittest.TestCase):
         t2 = threading.Thread(target=hold)
         t1.start(); t2.start(); t1.join(); t2.join()
         self.assertEqual(len(held), 2)
+
+
+class DiscardStartLockTests(unittest.TestCase):
+    """The spawn-lock registry must not grow without bound — raw shells
+    get a fresh name every launch, so each must be reclaimed."""
+
+    def test_discard_removes_the_registration(self):
+        _start_lock("raw-shell-1-aaaa")
+        self.assertIn("raw-shell-1-aaaa", ttyd._start_locks)
+        _discard_start_lock("raw-shell-1-aaaa")
+        self.assertNotIn("raw-shell-1-aaaa", ttyd._start_locks)
+
+    def test_discard_unknown_session_is_noop(self):
+        _discard_start_lock("never-registered")  # must not raise
+
+    def test_next_lock_after_discard_is_fresh(self):
+        first = _start_lock("rotate")
+        _discard_start_lock("rotate")
+        second = _start_lock("rotate")
+        self.assertIsNot(first, second)
+
+    def test_concurrent_holder_unaffected_by_discard(self):
+        # Discard only unregisters; a holder keeps its own reference and
+        # can still release cleanly.
+        lock = _start_lock("inflight")
+        with lock:
+            _discard_start_lock("inflight")  # pops the dict mid-hold
+            self.assertNotIn("inflight", ttyd._start_locks)
+        # Releasing after the discard must not raise.
+
+    def test_registry_bounded_across_many_raw_shells(self):
+        # Simulate the leak scenario: many unique raw-shell names, each
+        # discarded on stop — the registry must not accumulate them.
+        for i in range(200):
+            name = f"raw-shell-{i}-x"
+            _start_lock(name)
+            _discard_start_lock(name)
+        leftover = [n for n in ttyd._start_locks if n.startswith("raw-shell-")]
+        self.assertEqual(leftover, [])
+
+    def test_stop_discards_the_lock(self):
+        from unittest import mock
+        _start_lock("work-x")
+        self.assertIn("work-x", ttyd._start_locks)
+        # read_pid None -> stop() takes the "already stopped" path after
+        # discarding the lock; pidfile unlink is a no-op on a missing file.
+        with mock.patch.object(ttyd, "read_pid", return_value=None):
+            result = ttyd.stop("work-x")
+        self.assertTrue(result["ok"])
+        self.assertNotIn("work-x", ttyd._start_locks)
 
 
 class ReadPidTests(unittest.TestCase):

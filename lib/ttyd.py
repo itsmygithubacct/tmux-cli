@@ -43,6 +43,21 @@ def _start_lock(session: str) -> threading.Lock:
         return lock
 
 
+def _discard_start_lock(session: str) -> None:
+    """Drop a session's spawn lock once it's stopped.
+
+    Raw shells get a fresh unique name on every launch
+    (``raw-shell-<ms>-<rand>``), so without this the dict would grow one
+    entry per shell ever started — an unbounded leak on a long-lived
+    dashboard. Popping the dict entry only removes the *registration*; a
+    concurrent start() that already holds the lock object keeps its own
+    reference and finishes normally, and the next start() for this name
+    (if any) simply makes a new lock.
+    """
+    with _start_locks_mutex:
+        _start_locks.pop(session, None)
+
+
 def _atomic_write(path: Path, data: str) -> None:
     """Write ``data`` to ``path`` via tempfile+rename so readers never see a
     half-written file. write_text() truncates and writes — a concurrent
@@ -516,6 +531,9 @@ def stop(session: str) -> dict:
     # the dashboard show a stale row. Tmux sessions keep their port (the
     # ttyd may be re-spawned later); only raw shells get the release.
     is_raw = session.startswith("raw-shell-")
+    # The session is going away; drop its spawn lock so the registry
+    # doesn't accumulate one entry per (especially raw-shell) launch.
+    _discard_start_lock(session)
     pid = read_pid(session)
     if pid is None:
         _pidfile(session).unlink(missing_ok=True)
@@ -586,6 +604,19 @@ def gc_orphans() -> dict:
         if read_pid(name) is not None:
             active.add(name)
     dropped = ports.prune(active)
+
+    # Drop spawn locks for sessions that no longer have a live ttyd, in
+    # case any leaked from a stop() that never ran (hard crash / SIGKILL).
+    # Belt-and-braces with the discard in stop(); bounds the registry even
+    # for sessions that died without going through it. Snapshot the keys
+    # so the read_pid() I/O doesn't run under the mutex.
+    with _start_locks_mutex:
+        lock_names = list(_start_locks)
+    dead_locks = [n for n in lock_names if read_pid(n) is None]
+    with _start_locks_mutex:
+        for name in dead_locks:
+            _start_locks.pop(name, None)
+
     return {"stale_pids_removed": stale_pids, "ports_dropped": len(dropped)}
 
 
