@@ -94,10 +94,10 @@ def cmd_exec(args: argparse.Namespace) -> int:
         rc = result.get("exit_status")
         strategy = result.get("strategy", "?")
         dur = result.get("duration", 0)
-        if rc is not None:
-            sys.stderr.write(f"[{strategy} · exit {rc} · {dur}s]\n")
-        else:
-            sys.stderr.write(f"[{strategy} · exit unknown · {dur}s]\n")
+        rc_part = f"exit {rc}" if rc is not None else "exit unknown"
+        trunc_part = " · TRUNCATED (output exceeded capture window)" \
+            if result.get("truncated") else ""
+        sys.stderr.write(f"[{strategy} · {rc_part} · {dur}s{trunc_part}]\n")
     return 0
 
 

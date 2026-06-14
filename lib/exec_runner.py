@@ -123,9 +123,11 @@ def exec_sentinel(target: Target, command: str,
         return {"ok": False, "error": state["err"]}
     m = state["match"]
     if m is not None:
+        text, truncated = _extract(state["content"], start, m)
         return {
             "exit_status": int(m.group(1)),
-            "output": _extract(state["content"], start, m),
+            "output": text,
+            "truncated": truncated,
             "duration": round(time.monotonic() - t0, 3),
             "strategy": "sentinel",
         }
@@ -138,8 +140,16 @@ def exec_sentinel(target: Target, command: str,
     raise Timeout(f"exec timed out after {timeout_sec}s waiting for END sentinel")
 
 
-def _extract(content: str, start_marker: str, end_match: re.Match) -> str:
-    """Return the text between the last START marker and the END match."""
+def _extract(content: str, start_marker: str, end_match: re.Match) -> tuple[str, bool]:
+    """Return ``(output, truncated)`` for the text between START and END.
+
+    ``truncated`` is True when the START marker is absent from the capture —
+    which means the command emitted more than the capture window (5000 lines)
+    holds, so START scrolled off the top. In that case the returned text is a
+    best-effort tail that also contains unrelated prior scrollback; callers
+    must surface the flag so a consumer never mistakes a partial capture for
+    the command's complete output.
+    """
     # The START marker may appear twice (the wrapped command line echoed
     # back + the printf's newline-prefixed emission). Use the LAST occurrence
     # before the END match to pick the genuine start of captured output.
@@ -147,14 +157,14 @@ def _extract(content: str, start_marker: str, end_match: re.Match) -> str:
     search_region = content[:end_line_start]
     idx = search_region.rfind(start_marker)
     if idx < 0:
-        # Couldn't find START — return everything preceding END minus the
-        # wrapped command echo line.
-        return search_region.rstrip("\n")
+        # Couldn't find START — output overflowed the capture window. Return
+        # everything preceding END (best effort) and flag it as truncated.
+        return search_region.rstrip("\n"), True
     # Skip past the START line (marker + newline).
     after_start = idx + len(start_marker)
     if after_start < len(content) and content[after_start] == "\n":
         after_start += 1
-    return content[after_start:end_line_start].rstrip("\n")
+    return content[after_start:end_line_start].rstrip("\n"), False
 
 
 # -----------------------------------------------------------------------------

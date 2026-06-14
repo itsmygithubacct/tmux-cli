@@ -48,8 +48,9 @@ class ExtractTests(unittest.TestCase):
             "__TB_abc_END_0__\n"
         )
         end = re.search(r"^__TB_abc_END_(\d+)__$", content, re.MULTILINE)
-        out = exec_runner._extract(content, "__TB_abc_START__", end)
+        out, truncated = exec_runner._extract(content, "__TB_abc_START__", end)
         self.assertEqual(out, "line one\nline two")
+        self.assertFalse(truncated)
 
     def test_last_start_marker_wins(self):
         # The wrapped command echoes START once; printf emits it again
@@ -60,18 +61,21 @@ class ExtractTests(unittest.TestCase):
             "__TB_tag_END_0__\n"
         )
         end = re.search(r"^__TB_tag_END_(\d+)__$", content, re.MULTILINE)
-        out = exec_runner._extract(content, "__TB_tag_START__", end)
+        out, truncated = exec_runner._extract(content, "__TB_tag_START__", end)
         self.assertEqual(out, "real output")
+        self.assertFalse(truncated)
 
-    def test_missing_start_marker_returns_preceding_text(self):
-        # START marker never fires; END marker does. _extract should return
-        # everything preceding the END line (minus trailing newlines).
+    def test_missing_start_marker_returns_preceding_text_and_flags_truncation(self):
+        # START marker scrolled off the capture window; END marker is present.
+        # _extract returns the best-effort preceding text AND flags it as
+        # truncated so the caller never reports a partial capture as complete.
         content = "some noise\noutput without prelude\n__TB_x_END_2__\n"
         end = re.search(r"^__TB_x_END_(\d+)__$", content, re.MULTILINE)
         self.assertIsNotNone(end)
-        out = exec_runner._extract(content, "__TB_x_START__", end)
+        out, truncated = exec_runner._extract(content, "__TB_x_START__", end)
         self.assertIn("some noise", out)
         self.assertIn("output without prelude", out)
+        self.assertTrue(truncated)
 
 
 class PollUntilTests(unittest.TestCase):
