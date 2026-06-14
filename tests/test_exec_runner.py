@@ -78,6 +78,56 @@ class ExtractTests(unittest.TestCase):
         self.assertTrue(truncated)
 
 
+class NewLinesTests(unittest.TestCase):
+    """Idle-strategy diff: lines new since the pre-send capture."""
+
+    def test_simple_append(self):
+        before = ["$ ", "prev output"]
+        after = ["$ ", "prev output", "$ cmd", "result"]
+        self.assertEqual(exec_runner._new_lines(before, after),
+                         ["$ cmd", "result"])
+
+    def test_empty_before_returns_all(self):
+        after = ["a", "b"]
+        self.assertEqual(exec_runner._new_lines([], after), after)
+        self.assertEqual(exec_runner._new_lines([""], after), after)
+
+    def test_output_reproducing_last_line_is_not_dropped(self):
+        # The old single-line anchor matched the LAST "$ " and dropped the
+        # real output above it. A multi-line block anchor must not.
+        before = ["welcome", "$ "]
+        after = ["welcome", "$ ", "echo hi", "hi", "$ "]
+        # Genuine new content is everything after the pre-send "welcome\n$ ".
+        self.assertEqual(exec_runner._new_lines(before, after),
+                         ["echo hi", "hi", "$ "])
+
+    def test_partial_scrolloff_shrinks_block(self):
+        # The top of the pre-send content scrolled off; only its tail remains.
+        before = ["line1", "line2", "line3"]
+        after = ["line2", "line3", "new1", "new2"]
+        self.assertEqual(exec_runner._new_lines(before, after),
+                         ["new1", "new2"])
+
+    def test_no_overlap_returns_all(self):
+        before = ["totally", "gone"]
+        after = ["fresh", "screen"]
+        self.assertEqual(exec_runner._new_lines(before, after),
+                         ["fresh", "screen"])
+
+
+class RfindBlockTests(unittest.TestCase):
+
+    def test_last_occurrence(self):
+        lines = ["a", "x", "a", "b", "a", "b"]
+        self.assertEqual(exec_runner._rfind_block(lines, ["a", "b"]), 4)
+
+    def test_absent(self):
+        self.assertEqual(exec_runner._rfind_block(["a", "b"], ["c"]), -1)
+
+    def test_full_match(self):
+        self.assertEqual(exec_runner._rfind_block(["a", "b"], ["a", "b"]), 0)
+
+
 class PollUntilTests(unittest.TestCase):
 
     def test_returns_hit_immediately(self):

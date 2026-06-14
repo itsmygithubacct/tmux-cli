@@ -167,6 +167,43 @@ def _extract(content: str, start_marker: str, end_match: re.Match) -> tuple[str,
     return content[after_start:end_line_start].rstrip("\n"), False
 
 
+def _rfind_block(lines: list[str], block: list[str]) -> int:
+    """Index of the LAST start position where ``block`` occurs contiguously in
+    ``lines``, or -1. ``block`` is assumed non-empty and no longer than lines.
+    """
+    first = block[0]
+    for i in range(len(lines) - len(block), -1, -1):
+        if lines[i] == first and lines[i:i + len(block)] == block:
+            return i
+    return -1
+
+
+def _new_lines(before_lines: list[str], after_lines: list[str]) -> list[str]:
+    """Return the lines in ``after_lines`` that are new since ``before_lines``.
+
+    The idle strategy diffs two captures of the same scrolling pane. The
+    pre-send content's tail still sits somewhere in the post-send capture
+    (unless it scrolled off), so we locate the END of that content and treat
+    everything below it as the command's output.
+
+    We anchor on the *largest trailing block* of ``before_lines`` that still
+    appears in ``after_lines`` — matching a multi-line block instead of the
+    single last line (the previous approach) makes a coincidental collision
+    with the command's own output vanishingly unlikely, while shrinking the
+    block handles the case where the top of the pre-send content scrolled off.
+    Among equal-length matches we take the LAST, since the genuine pre-send
+    content is the most recent occurrence before new output appears.
+    """
+    if not before_lines or before_lines == [""]:
+        return after_lines
+    max_k = min(len(before_lines), len(after_lines))
+    for k in range(max_k, 0, -1):
+        pos = _rfind_block(after_lines, before_lines[-k:])
+        if pos != -1:
+            return after_lines[pos + k:]
+    return after_lines
+
+
 # -----------------------------------------------------------------------------
 # Idle strategy
 # -----------------------------------------------------------------------------
@@ -223,20 +260,9 @@ def exec_idle(target: Target, command: str,
             sessions.send_keys(target, "C-c")
         raise Timeout(f"exec timed out after {timeout_sec}s (idle strategy)")
 
-    # New content = everything after the last line we saw pre-send.
+    # New content = everything after the pre-send capture's content.
     after_lines = after.rstrip("\n").split("\n")
-    anchor = before_tail[-1] if before_tail else ""
-    idx = -1
-    if anchor:
-        # Scan from the end — the anchor most likely sits near the top of
-        # the newly captured text since the command scrolled output below.
-        for i, line in enumerate(after_lines):
-            if line == anchor:
-                idx = i
-    if idx >= 0:
-        diff = "\n".join(after_lines[idx + 1:])
-    else:
-        diff = after
+    diff = "\n".join(_new_lines(before_tail, after_lines))
 
     return {
         "exit_status": None,  # unknown in idle mode
