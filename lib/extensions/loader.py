@@ -57,7 +57,7 @@ def load_one(path: Path, *, core_version: str) -> Registration:
     reg = Registration(name=manifest.name)
 
     if manifest.routes_entry:
-        handlers = _call_entry(manifest, "routes_entry", "register")
+        handlers = _call_entry(manifest, path, "routes_entry", "register")
         if handlers is not None:
             # routes_entry may return either a full Registration (rich
             # form) or a dict of route dicts (light form).
@@ -77,7 +77,7 @@ def load_one(path: Path, *, core_version: str) -> Registration:
                     f"got {type(handlers).__name__}")
 
     if manifest.cli_entry:
-        verbs = _call_entry(manifest, "cli_entry", "register_verb")
+        verbs = _call_entry(manifest, path, "cli_entry", "register_verb")
         if isinstance(verbs, dict):
             reg.cli_verbs.update(verbs)
         elif callable(verbs):
@@ -106,7 +106,7 @@ def load_one(path: Path, *, core_version: str) -> Registration:
             reg.static_js.extend(sorted(static_root.glob("*.js")))
 
     if manifest.startup_entry:
-        fns = _call_entry(manifest, "startup_entry", "register")
+        fns = _call_entry(manifest, path, "startup_entry", "register")
         if isinstance(fns, dict):
             for fn in fns.get("on_server_start") or []:
                 reg.startup.append(fn)
@@ -138,7 +138,8 @@ def _contained_path(base: Path, rel: str, name: str, stage: str) -> Path:
     return candidate
 
 
-def _call_entry(manifest: Manifest, field_name: str, default_fn: str):
+def _call_entry(manifest: Manifest, ext_path: Path,
+                field_name: str, default_fn: str):
     """Resolve a ``module:callable`` spec, import, call, return result.
 
     ``manifest.routes_entry`` etc. are ``"module.path:func"`` strings.
@@ -156,6 +157,19 @@ def _call_entry(manifest: Manifest, field_name: str, default_fn: str):
         raise ExtensionLoadError(
             manifest.name, "import",
             f"cannot import {mod_name!r}: {e}") from e
+    # The module name is untrusted manifest data and the extension's dir is on
+    # sys.path, so ``import_module`` would happily resolve a core module, a
+    # sibling extension's module (possibly already cached in sys.modules), or
+    # a stdlib name. Confine entry points to the extension's own tree: require
+    # a real file living under ext_path. This rejects builtins/namespace
+    # packages (no __file__) too — an entry point must be a file we shipped.
+    mod_file = getattr(mod, "__file__", None)
+    ext_root = ext_path.resolve()
+    if mod_file is None or not Path(mod_file).resolve().is_relative_to(ext_root):
+        raise ExtensionLoadError(
+            manifest.name, "import",
+            f"entry module {mod_name!r} resolves outside the extension "
+            f"directory")
     fn = getattr(mod, fn_name, None)
     if fn is None:
         raise ExtensionLoadError(
