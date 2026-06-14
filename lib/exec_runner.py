@@ -235,8 +235,10 @@ def exec_idle(target: Target, command: str,
     if not ok:
         return {"ok": False, "error": err}
 
-    # Track the pane hash and the monotonic time of the last observed change.
-    state: dict = {"hash": None, "last_change": time.monotonic(), "err": None, "capture": ""}
+    # Track the last captured content and the monotonic time it last changed.
+    # Compare content directly rather than its hash() — hash() risks a
+    # (tiny) collision that would falsely read the pane as quiet.
+    state: dict = {"prev": None, "last_change": time.monotonic(), "err": None, "capture": ""}
 
     def check_idle() -> tuple[bool, str]:
         ok, snap = sessions.capture_target(target, lines=5000)
@@ -244,10 +246,9 @@ def exec_idle(target: Target, command: str,
             state["err"] = snap
             return True, snap  # break out; caller checks state["err"]
         state["capture"] = snap
-        h = hash(snap)
         now = time.monotonic()
-        if h != state["hash"]:
-            state["hash"] = h
+        if snap != state["prev"]:
+            state["prev"] = snap
             state["last_change"] = now
         return (now - state["last_change"] >= idle_sec), snap
 

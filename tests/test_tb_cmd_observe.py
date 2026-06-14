@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -44,6 +47,33 @@ class WatchLoopTests(unittest.TestCase):
         # bug (sleep only at the bottom, skipped by `continue`) this would be 0.
         self.assertEqual(state["sleeps"], state["captures"])
         self.assertGreaterEqual(state["sleeps"], 2)
+
+
+    def test_emits_on_change_and_dedupes_identical_captures(self):
+        # First capture seeds state (no emit); an identical capture emits
+        # nothing; a changed capture emits one event. This is the behaviour
+        # the old hash() compare guarded — now a direct content compare.
+        captures = ["same\n", "same\n", "one\ntwo\n"]
+
+        def fake_capture(_t, lines=100, ansi=False):
+            if not captures:
+                raise KeyboardInterrupt
+            return (True, captures.pop(0))
+
+        args = argparse.Namespace(
+            target="work", lines=100, interval=0.01, json=True, quiet=False)
+        buf = io.StringIO()
+        with mock.patch.object(observe.sessions, "exists", return_value=True), \
+             mock.patch.object(observe.sessions, "capture_target",
+                               side_effect=fake_capture), \
+             mock.patch.object(observe.time, "sleep"), \
+             contextlib.redirect_stdout(buf):
+            rc = observe.cmd_watch(args)
+
+        self.assertEqual(rc, 0)
+        lines = [ln for ln in buf.getvalue().splitlines() if ln.strip()]
+        self.assertEqual(len(lines), 1, lines)  # only the change emitted
+        self.assertEqual(json.loads(lines[0])["last_line"], "two")
 
 
 if __name__ == "__main__":

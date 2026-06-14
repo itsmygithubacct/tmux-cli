@@ -34,7 +34,9 @@ def cmd_wait(args: argparse.Namespace) -> int:
 
 def cmd_watch(args: argparse.Namespace) -> int:
     t = require_target(args.target)
-    last_hash = None
+    # Compare captured content directly rather than its hash(): a hash
+    # collision would silently swallow a change event.
+    last_content = None
     try:
         while True:
             # Sleep at the top of the loop so that *every* iteration — including
@@ -57,11 +59,10 @@ def cmd_watch(args: argparse.Namespace) -> int:
                         print(f"[{_now_iso()}] session gone")
                     return 3
                 continue
-            h = hash(content)
-            if last_hash is None:
-                last_hash = h
-            elif h != last_hash:
-                last_hash = h
+            if last_content is None:
+                last_content = content
+            elif content != last_content:
+                last_content = content
                 last_line = content.rstrip("\n").rsplit("\n", 1)[-1]
                 if args.json:
                     print(json.dumps({
