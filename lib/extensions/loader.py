@@ -91,7 +91,8 @@ def load_one(path: Path, *, core_version: str) -> Registration:
                 f"got {type(verbs).__name__}")
 
     if manifest.ui_blocks_path:
-        blocks_path = path / manifest.ui_blocks_path
+        blocks_path = _contained_path(
+            path, manifest.ui_blocks_path, manifest.name, "ui_blocks")
         try:
             reg.ui_blocks.update(parse_ui_blocks(blocks_path))
         except Exception as e:
@@ -99,7 +100,8 @@ def load_one(path: Path, *, core_version: str) -> Registration:
                 manifest.name, "ui_blocks", str(e)) from e
 
     if manifest.static_dir:
-        static_root = path / manifest.static_dir
+        static_root = _contained_path(
+            path, manifest.static_dir, manifest.name, "static")
         if static_root.is_dir():
             reg.static_js.extend(sorted(static_root.glob("*.js")))
 
@@ -117,6 +119,23 @@ def load_one(path: Path, *, core_version: str) -> Registration:
                 f"and/or on_server_stop lists; got {type(fns).__name__}")
 
     return reg
+
+
+def _contained_path(base: Path, rel: str, name: str, stage: str) -> Path:
+    """Resolve ``base / rel`` and refuse it if it escapes ``base``.
+
+    ``rel`` comes from the manifest (untrusted). A value containing ``..`` —
+    or an absolute path, which ``Path.__truediv__`` lets clobber ``base``
+    entirely — would otherwise let an extension read UI-block files or glob
+    static assets from anywhere on disk. Resolving both sides also defeats a
+    symlink inside the extension that points outside its tree.
+    """
+    base_r = base.resolve()
+    candidate = (base / rel).resolve()
+    if candidate != base_r and not candidate.is_relative_to(base_r):
+        raise ExtensionLoadError(
+            name, stage, f"path {rel!r} escapes the extension directory")
+    return candidate
 
 
 def _call_entry(manifest: Manifest, field_name: str, default_fn: str):
