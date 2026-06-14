@@ -104,6 +104,27 @@ class PortsFileIsJSONTests(_IsolatedStateMixin, unittest.TestCase):
         self.assertEqual(first_keys, sorted(first_keys))
 
 
+class SaveFailurePreservesRegistryTests(_IsolatedStateMixin, unittest.TestCase):
+
+    def test_serialise_error_does_not_blank_the_registry(self):
+        # Establish a good registry on disk.
+        ports.assign("keep")
+        good = cfg.PORTS_FILE.read_text()
+        self.assertIn("keep", good)
+
+        # Force json.dumps to fail during the next save(). Because we
+        # serialise before truncating, the on-disk file must be untouched.
+        with mock.patch.object(ports.json, "dumps",
+                               side_effect=ValueError("boom")):
+            with self.assertRaises(ValueError):
+                ports.assign("doomed")
+
+        after = cfg.PORTS_FILE.read_text()
+        self.assertEqual(after, good)
+        self.assertEqual(json.loads(after)["assignments"].get("doomed"), None)
+        self.assertIsNotNone(ports.get("keep"))
+
+
 class AllocationBoundariesTests(_IsolatedStateMixin, unittest.TestCase):
 
     def test_ports_stay_within_configured_range(self):
