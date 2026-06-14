@@ -10,6 +10,29 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from lib import sessions  # noqa: E402
+from lib.errors import UsageError  # noqa: E402
+
+
+class ValidateNameTests(unittest.TestCase):
+
+    def test_accepts_ordinary_names(self):
+        for ok in ("work", "bot-sessions_v2", "worker_code", "a1"):
+            sessions._validate_name(ok)  # must not raise
+
+    def test_rejects_empty_and_whitespace_and_delimiters(self):
+        for bad in ("", "a b", "a\tb", "a\nb", "a:b", "a.b"):
+            with self.assertRaises(UsageError):
+                sessions._validate_name(bad)
+
+    def test_rejects_leading_dash_and_equals(self):
+        # leading '-' → tmux flag injection; leading '=' → exact-match clash
+        for bad in ("-rf", "--help", "=work"):
+            with self.assertRaises(UsageError):
+                sessions._validate_name(bad)
+
+    def test_allows_dash_and_equals_mid_name(self):
+        sessions._validate_name("a-b")
+        sessions._validate_name("a=b")
 
 
 def _tmux_row(name, group, windows=1, attached=0, created=1000, activity=1100):

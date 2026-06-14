@@ -211,6 +211,12 @@ def _validate_name(name: str) -> None:
         raise UsageError(
             "session name must be non-empty and contain no whitespace, ':' or '.'",
         )
+    # A leading '-' would be parsed as an option by tmux in the positional
+    # ``new-session -s NAME`` / ``rename-session NEW`` slots; a leading '='
+    # collides with the exact-match prefix that targeting uses (``=name``),
+    # making the session unaddressable. Reject both.
+    if name[0] in "-=":
+        raise UsageError("session name must not start with '-' or '='")
 
 
 def kill(session: str) -> tuple[bool, str]:
