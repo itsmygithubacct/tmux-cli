@@ -104,6 +104,29 @@ def _extract_member_text(tf: tarfile.TarFile, root: str, rel: str) -> str | None
     return f.read().decode("utf-8") if f else None
 
 
+class _NoLibError(Exception):
+    """Raised when the archive contains no ``lib/`` members."""
+
+
+def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
+    """Extract ``<root>/lib/`` from ``tf`` over ``dest_lib`` (refresh, no prune).
+
+    Extraction goes through a temp dir with ``filter="data"`` so a crafted
+    archive can't escape it via ``..``/absolute member names or symlinks, and
+    setuid/exec bits are stripped. Members are pre-filtered to ``<root>/lib/``;
+    the ``startswith`` check alone is not a traversal guard (``lib/../..``
+    would pass it), which is exactly why the tarfile data filter is required.
+    """
+    members = [m for m in tf.getmembers()
+               if m.name.startswith(f"{root}/lib/")]
+    if not members:
+        raise _NoLibError(root)
+    with tempfile.TemporaryDirectory() as td:
+        tf.extractall(td, members=members, filter="data")
+        src_lib = Path(td) / root / "lib"
+        shutil.copytree(src_lib, dest_lib, dirs_exist_ok=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="update_tb.py",
@@ -170,16 +193,12 @@ def main(argv: list[str] | None = None) -> int:
         wrote = ["tb.py"]
 
         if not args.file_only:
-            # Extract lib/ to a temp area, then copy over the destination's
-            # lib/ (overwriting files; this refreshes rather than prunes).
-            with tempfile.TemporaryDirectory() as td:
-                members = [m for m in tf.getmembers()
-                           if m.name.startswith(f"{root}/lib/")]
-                if not members:
-                    return _die(f"lib/ not found in {args.repo}@{ref}")
-                tf.extractall(td, members=members)  # noqa: S202 (trusted archive)
-                src_lib = Path(td) / root / "lib"
-                shutil.copytree(src_lib, dest / "lib", dirs_exist_ok=True)
+            try:
+                _extract_lib(tf, root, dest / "lib")
+            except _NoLibError:
+                return _die(f"lib/ not found in {args.repo}@{ref}")
+            except (tarfile.TarError, OSError) as e:
+                return _die(f"refusing to extract lib/: {e}")
             wrote.append("lib/")
 
     _say(f"wrote {', '.join(wrote)} ({pulled_ver or ref}) to {dest}")
