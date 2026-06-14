@@ -30,7 +30,7 @@ from .. import config
 from .catalog import KNOWN as CATALOG
 from .loader import ExtensionLoadError, load_one
 from .manifest import Manifest, ManifestError
-from .registry import MergedRegistry, Registration, RegistryConflict
+from .registry import MergedRegistry, Registration, RegistryConflict, UIBlocksError
 from . import submodule
 
 
@@ -51,6 +51,7 @@ __all__ = [
     "MergedRegistry",
     "Registration",
     "RegistryConflict",
+    "UIBlocksError",
     "InstallError",
     "InstallResult",
     "UpdateError",
