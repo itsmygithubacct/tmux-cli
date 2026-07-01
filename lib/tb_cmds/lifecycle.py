@@ -1,4 +1,4 @@
-"""Lifecycle verbs: new, kill, rename, attach, range."""
+"""Lifecycle verbs: new, kill, rename, attach, a, range."""
 
 from __future__ import annotations
 
@@ -240,6 +240,23 @@ def cmd_attach(args: argparse.Namespace) -> int:
     return 0  # unreachable
 
 
+def cmd_a(args: argparse.Namespace) -> int:
+    name = args.name
+    if not sys.stdout.isatty():
+        raise UsageError("a requires an interactive TTY")
+    if not sessions.exists(name):
+        ok, err = sessions.new_session(
+            name,
+            cwd=args.cwd,
+            cmd=args.cmd,
+            enable_logging=not args.no_log,
+        )
+        if not ok:
+            raise TmuxFailed(err)
+    os.execvp("tmux", ["tmux", "attach-session", "-t", f"={name}"])
+    return 0  # unreachable
+
+
 def register(sub, common) -> None:
     p = sub.add_parser("new", help="create a new (detached) session",
                        parents=[common])
@@ -315,3 +332,17 @@ def register(sub, common) -> None:
                        parents=[common])
     p.add_argument("target")
     p.set_defaults(func=cmd_attach)
+
+    p = sub.add_parser(
+        "a",
+        help="create a session if missing, then attach (requires a TTY)",
+        parents=[common],
+    )
+    p.add_argument("name", help="session name")
+    p.add_argument("--cwd", help="starting directory when creating")
+    p.add_argument("--cmd", help="command for the first pane when creating")
+    p.add_argument("--no-log", action="store_true",
+                   help="don't enable pipe-pane logging when creating")
+    # `a` may need to create the first session, so it must be allowed to run
+    # when no tmux server exists yet.
+    p.set_defaults(func=cmd_a, needs_server=False)

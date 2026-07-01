@@ -132,7 +132,7 @@ class NeedsServerMappingTests(unittest.TestCase):
         return getattr(self.p.parse_args(argv), "needs_server", True)
 
     def test_server_less_verbs(self):
-        for argv in (["ls"], ["exists", "x"], ["snapshot"], ["new", "x"],
+        for argv in (["ls"], ["exists", "x"], ["snapshot"], ["new", "x"], ["a", "x"],
                      ["range", "2", "bash"], ["config"], ["config", "get", "auto_refresh"],
                      ["web", "url", "s"], ["web", "stop", "s"]):
             with self.subTest(argv=argv):
@@ -189,6 +189,60 @@ class ServerGateTests(_StubMixin, unittest.TestCase):
         rc, stub = self._run(web, "cmd_web_start", ["web", "start", "s"], server=False)
         self.assertEqual(rc, 6)
         stub.assert_not_called()
+
+    def test_a_runs_without_existing_server(self):
+        rc, stub = self._run(lifecycle, "cmd_a", ["a", "s"], server=False)
+        self.assertEqual(rc, 0)
+        stub.assert_called_once()
+
+
+class AVerbTests(unittest.TestCase):
+    def _args(self, **overrides):
+        args = {
+            "name": "work",
+            "cwd": None,
+            "cmd": None,
+            "no_log": False,
+        }
+        args.update(overrides)
+        return types.SimpleNamespace(**args)
+
+    def test_creates_missing_session_then_attaches(self):
+        with mock.patch.object(sys.stdout, "isatty", return_value=True), \
+             mock.patch.object(lifecycle.sessions, "exists", return_value=False), \
+             mock.patch.object(lifecycle.sessions, "new_session",
+                               return_value=(True, "")) as new_session, \
+             mock.patch.object(lifecycle.os, "execvp") as execvp:
+            lifecycle.cmd_a(self._args(cwd="/tmp", cmd="bash", no_log=True))
+
+        new_session.assert_called_once_with(
+            "work",
+            cwd="/tmp",
+            cmd="bash",
+            enable_logging=False,
+        )
+        execvp.assert_called_once_with(
+            "tmux",
+            ["tmux", "attach-session", "-t", "=work"],
+        )
+
+    def test_existing_session_attaches_without_creating(self):
+        with mock.patch.object(sys.stdout, "isatty", return_value=True), \
+             mock.patch.object(lifecycle.sessions, "exists", return_value=True), \
+             mock.patch.object(lifecycle.sessions, "new_session") as new_session, \
+             mock.patch.object(lifecycle.os, "execvp") as execvp:
+            lifecycle.cmd_a(self._args())
+
+        new_session.assert_not_called()
+        execvp.assert_called_once_with(
+            "tmux",
+            ["tmux", "attach-session", "-t", "=work"],
+        )
+
+    def test_requires_tty(self):
+        with mock.patch.object(sys.stdout, "isatty", return_value=False):
+            with self.assertRaises(UsageError):
+                lifecycle.cmd_a(self._args())
 
 
 class ErrorHandlingTests(_StubMixin, unittest.TestCase):
