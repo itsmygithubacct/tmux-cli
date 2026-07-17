@@ -8,4 +8,4 @@ the dashboard both read it from here.
 
 from __future__ import annotations
 
-__version__ = "0.7.9.4"
+__version__ = "0.7.9.5"
