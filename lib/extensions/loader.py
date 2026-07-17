@@ -51,8 +51,11 @@ def load_one(path: Path, *, core_version: str) -> Registration:
     # the same name in core; that's intentional — extensions are their
     # own namespace.
     ext_root = str(path.resolve())
-    if ext_root not in sys.path:
-        sys.path.insert(0, ext_root)
+    # Move this extension to the front even if it was loaded before and a
+    # later extension subsequently took precedence.
+    while ext_root in sys.path:
+        sys.path.remove(ext_root)
+    sys.path.insert(0, ext_root)
 
     reg = Registration(name=manifest.name)
 
@@ -151,9 +154,16 @@ def _call_entry(manifest: Manifest, ext_path: Path,
         mod_name, fn_name = spec.split(":", 1)
     else:
         mod_name, fn_name = spec, default_fn
+    ext_root = ext_path.resolve()
+    stale = _evict_stale_entry_modules(mod_name, ext_root)
+    before_import = set(sys.modules)
+    importlib.invalidate_caches()
     try:
         mod = importlib.import_module(mod_name)
     except Exception as e:
+        # A failed extension import must not leave a half-imported package in
+        # the process or discard the previously working module cache.
+        _restore_entry_modules(mod_name, before_import, stale)
         raise ExtensionLoadError(
             manifest.name, "import",
             f"cannot import {mod_name!r}: {e}") from e
@@ -164,8 +174,8 @@ def _call_entry(manifest: Manifest, ext_path: Path,
     # a real file living under ext_path. This rejects builtins/namespace
     # packages (no __file__) too — an entry point must be a file we shipped.
     mod_file = getattr(mod, "__file__", None)
-    ext_root = ext_path.resolve()
     if mod_file is None or not Path(mod_file).resolve().is_relative_to(ext_root):
+        _restore_entry_modules(mod_name, before_import, stale)
         raise ExtensionLoadError(
             manifest.name, "import",
             f"entry module {mod_name!r} resolves outside the extension "
@@ -181,3 +191,62 @@ def _call_entry(manifest: Manifest, ext_path: Path,
         raise ExtensionLoadError(
             manifest.name, "entry",
             f"{mod_name}.{fn_name}() raised: {e}") from e
+
+
+def _module_belongs_to(module, ext_root: Path) -> bool:
+    """Whether a cached module or namespace package lives in ``ext_root``."""
+    mod_file = getattr(module, "__file__", None)
+    if mod_file is not None:
+        return Path(mod_file).resolve().is_relative_to(ext_root)
+    for entry in getattr(module, "__path__", ()):
+        if Path(entry).resolve().is_relative_to(ext_root):
+            return True
+    return False
+
+
+def _restore_entry_modules(mod_name: str, before_import: set[str],
+                           stale: dict[str, object]) -> None:
+    """Undo cache changes after a failed or out-of-tree entry import."""
+    top_name = mod_name.split(".", 1)[0]
+    for name in set(sys.modules) - before_import:
+        if name == top_name or name.startswith(top_name + "."):
+            sys.modules.pop(name, None)
+    sys.modules.update(stale)
+
+
+def _entry_exists_in_extension(mod_name: str, ext_root: Path) -> bool:
+    """Return True only when ``mod_name`` has an importable in-tree file."""
+    parts = mod_name.split(".")
+    if not parts or any(not part.isidentifier() for part in parts):
+        return False
+    relative = ext_root.joinpath(*parts)
+    candidates = (relative.with_suffix(".py"), relative / "__init__.py")
+    return any(
+        candidate.is_file()
+        and candidate.resolve().is_relative_to(ext_root)
+        for candidate in candidates
+    )
+
+
+def _evict_stale_entry_modules(mod_name: str,
+                               ext_root: Path) -> dict[str, object]:
+    """Remove cached same-named modules from earlier extension roots.
+
+    Entry module names are local to an extension, so two extensions may both
+    use a conventional name such as ``startup``. Python's global module cache
+    would otherwise return the first extension's module for the second load.
+    Eviction is allowed only when this extension actually ships the requested
+    module; a manifest that merely names a core, sibling, or stdlib module
+    remains fail-closed.
+    """
+    if not _entry_exists_in_extension(mod_name, ext_root):
+        return {}
+    top_name = mod_name.split(".", 1)[0]
+    stale: dict[str, object] = {}
+    for name, module in list(sys.modules.items()):
+        if name != top_name and not name.startswith(top_name + "."):
+            continue
+        if not _module_belongs_to(module, ext_root):
+            stale[name] = module
+            del sys.modules[name]
+    return stale
