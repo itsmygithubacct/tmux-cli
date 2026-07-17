@@ -35,7 +35,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 DEFAULT_REPO = "itsmygithubacct/tmux-cli"
 _UA = {"User-Agent": "tmux-cli-update_tb"}
@@ -111,19 +111,60 @@ class _NoLibError(Exception):
 def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
     """Extract ``<root>/lib/`` from ``tf`` over ``dest_lib`` (refresh, no prune).
 
-    Extraction goes through a temp dir with ``filter="data"`` so a crafted
-    archive can't escape it via ``..``/absolute member names or symlinks, and
-    setuid/exec bits are stripped. Members are pre-filtered to ``<root>/lib/``;
-    the ``startswith`` check alone is not a traversal guard (``lib/../..``
-    would pass it), which is exactly why the tarfile data filter is required.
+    Copy regular files explicitly instead of using ``TarFile.extractall``.
+    This keeps the traversal and link protections available on every supported
+    Python version (3.10+); tarfile's ``filter="data"`` API only arrived in
+    Python 3.12. The completed temporary tree is copied into place only after
+    every archive member has passed validation.
     """
-    members = [m for m in tf.getmembers()
-               if m.name.startswith(f"{root}/lib/")]
-    if not members:
+    root_path = PurePosixPath(root)
+    if root_path.is_absolute() or len(root_path.parts) != 1 \
+            or root_path.parts[0] in {".", ".."}:
+        raise tarfile.TarError(f"unsafe archive root: {root!r}")
+
+    prefix = root_path.parts + ("lib",)
+    members: list[tuple[tarfile.TarInfo, tuple[str, ...]]] = []
+    found_lib = False
+    for member in tf.getmembers():
+        path = PurePosixPath(member.name)
+        parts = path.parts
+        if len(parts) < len(prefix) or parts[:len(prefix)] != prefix:
+            continue
+        found_lib = True
+        if path.is_absolute() or ".." in parts:
+            raise tarfile.TarError(f"unsafe archive member: {member.name!r}")
+        if not (member.isdir() or member.isfile()):
+            raise tarfile.TarError(
+                f"links and special files are not allowed: {member.name!r}")
+        relative = parts[len(prefix):]
+        if relative:
+            members.append((member, relative))
+
+    if not found_lib:
         raise _NoLibError(root)
+
     with tempfile.TemporaryDirectory() as td:
-        tf.extractall(td, members=members, filter="data")
-        src_lib = Path(td) / root / "lib"
+        src_lib = Path(td) / "lib"
+        src_lib.mkdir()
+        written: set[tuple[str, ...]] = set()
+        for member, relative in members:
+            if relative in written:
+                raise tarfile.TarError(
+                    f"duplicate archive member: {member.name!r}")
+            written.add(relative)
+            target = src_lib.joinpath(*relative)
+            if member.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                target.chmod(0o755)
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            source = tf.extractfile(member)
+            if source is None:
+                raise tarfile.TarError(
+                    f"could not read archive member: {member.name!r}")
+            with source, target.open("xb") as out:
+                shutil.copyfileobj(source, out)
+            target.chmod(0o644)
         shutil.copytree(src_lib, dest_lib, dirs_exist_ok=True)
 
 

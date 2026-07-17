@@ -54,7 +54,7 @@ class ExtractLibTests(unittest.TestCase):
 
     def test_traversal_member_is_rejected(self):
         # A member that passes the "root/lib/" prefix check but escapes the
-        # extraction dir via ".." must be refused by the data filter.
+        # extraction dir via ".." must be refused by the validator.
         evil = "root/lib/../../../../../../tmp/evil_update_tb.py"
         tf = _make_tar({
             "root/lib/config.py": b"X = 1\n",
@@ -65,6 +65,37 @@ class ExtractLibTests(unittest.TestCase):
                 update_tb._extract_lib(tf, "root", Path(d) / "lib")
             # And nothing landed outside the temp dir.
             self.assertFalse(Path("/tmp/evil_update_tb.py").exists())
+            self.assertFalse((Path(d) / "lib").exists())
+
+    def test_symlink_member_is_rejected(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            info = tarfile.TarInfo("root/lib/link")
+            info.type = tarfile.SYMTYPE
+            info.linkname = "../../outside"
+            tf.addfile(info)
+        buf.seek(0)
+        with tarfile.open(fileobj=buf, mode="r") as tf, \
+                tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(tarfile.TarError):
+                update_tb._extract_lib(tf, "root", Path(d) / "lib")
+            self.assertFalse((Path(d) / "lib").exists())
+
+    def test_extracted_files_are_not_executable(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w") as tf:
+            content = b"X = 1\n"
+            info = tarfile.TarInfo("root/lib/config.py")
+            info.size = len(content)
+            info.mode = 0o6755
+            tf.addfile(info, io.BytesIO(content))
+        buf.seek(0)
+        with tarfile.open(fileobj=buf, mode="r") as tf, \
+                tempfile.TemporaryDirectory() as d:
+            dest = Path(d) / "lib"
+            update_tb._extract_lib(tf, "root", dest)
+            self.assertEqual(dest.joinpath("config.py").stat().st_mode & 0o777,
+                             0o644)
 
 
 class VersionHelperTests(unittest.TestCase):
