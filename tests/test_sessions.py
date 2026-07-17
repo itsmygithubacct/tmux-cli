@@ -16,7 +16,7 @@ from lib.errors import UsageError  # noqa: E402
 class ValidateNameTests(unittest.TestCase):
 
     def test_accepts_ordinary_names(self):
-        for ok in ("work", "bot-sessions_v2", "worker_code", "a1"):
+        for ok in ("work", "bot-sessions_v2", "worker", "a1"):
             sessions._validate_name(ok)  # must not raise
 
     def test_rejects_empty_and_whitespace_and_delimiters(self):
@@ -54,13 +54,13 @@ class ListSessionsDedupTests(unittest.TestCase):
 
     def test_primary_wins_over_viewers(self):
         rows = [
-            _tmux_row("worker_code", "worker_code"),
-            _tmux_row("worker_code-v1-1", "worker_code"),
-            _tmux_row("worker_code-v1-2", "worker_code"),
+            _tmux_row("worker", "worker"),
+            _tmux_row("worker-v1-1", "worker"),
+            _tmux_row("worker-v1-2", "worker"),
         ]
         out = self._run(rows)
         names = [r["name"] for r in out]
-        self.assertEqual(names, ["worker_code"])
+        self.assertEqual(names, ["worker"])
 
     def test_orphan_group_is_dropped_entirely(self):
         # No primary present — viewers are dropped from the listing so the
@@ -78,24 +78,24 @@ class ListSessionsDedupTests(unittest.TestCase):
     def test_mixed_groups_and_ungrouped(self):
         rows = [
             _tmux_row("scratch", ""),
-            _tmux_row("worker_code", "worker_code"),
-            _tmux_row("worker_code-v1-1", "worker_code"),
+            _tmux_row("worker", "worker"),
+            _tmux_row("worker-v1-1", "worker"),
             _tmux_row("orphan-v1-1", "orphan"),
         ]
         out = self._run(rows)
         names = sorted(r["name"] for r in out)
-        # scratch (ungrouped) and worker_code (primary) survive; the
-        # orphan viewer is dropped, the worker_code viewer is dropped.
-        self.assertEqual(names, ["worker_code", "scratch"])
+        # scratch (ungrouped) and worker (primary) survive; the
+        # orphan viewer is dropped, the worker viewer is dropped.
+        self.assertEqual(names, ["scratch", "worker"])
 
     def test_primary_wins_regardless_of_ordering(self):
         # Viewer comes first in tmux output, primary second — primary still wins.
         rows = [
-            _tmux_row("worker_code-v1-1", "worker_code"),
-            _tmux_row("worker_code", "worker_code"),
+            _tmux_row("worker-v1-1", "worker"),
+            _tmux_row("worker", "worker"),
         ]
         out = self._run(rows)
-        self.assertEqual([r["name"] for r in out], ["worker_code"])
+        self.assertEqual([r["name"] for r in out], ["worker"])
 
     def test_attached_and_activity_fields_preserved(self):
         rows = [_tmux_row("work", "", attached=3, activity=2500)]
