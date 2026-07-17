@@ -54,6 +54,12 @@ class RegistryConflict(ValueError):
     slot. Surfaces with the names of both extensions in the message."""
 
 
+class UIBlocksError(ValueError):
+    """Raised when an extension's ``ui_blocks`` file can't be read or parsed.
+    Distinct from :class:`RegistryConflict` — this is an I/O/format failure,
+    not a name collision between two extensions."""
+
+
 @dataclass
 class MergedRegistry:
     """Accumulator for the union of every loaded extension's registration."""
@@ -134,7 +140,7 @@ def parse_ui_blocks(path: Path) -> dict[str, str]:
     try:
         raw = path.read_text(encoding="utf-8")
     except OSError as e:
-        raise RegistryConflict(f"cannot read ui_blocks from {path}: {e}")
+        raise UIBlocksError(f"cannot read ui_blocks from {path}: {e}") from e
     out: dict[str, str] = {}
     current: str | None = None
     buf: list[str] = []

@@ -12,14 +12,21 @@ class Target:
     pane: str | None = None
 
     def as_tmux_target(self) -> str:
-        """Return the string form tmux accepts (``session:window.pane``)."""
+        """Return the string form tmux accepts (``=session:window.pane``).
+
+        The session name is prefixed with ``=`` so tmux matches it *exactly*
+        rather than by name-prefix or fnmatch. Without it, targeting ``web``
+        while only ``web2`` exists would silently resolve to ``web2``; the
+        lifecycle ops (``exists``/``kill``/``rename``) already anchor with
+        ``=`` and the I/O verbs must agree so a command never lands in the
+        wrong pane.
+        """
         if self.window is None:
-            # ``session:`` constrains to that session's active pane and avoids
-            # tmux's name-prefix ambiguity that a bare name would allow.
-            return f"{self.session}:"
+            # Trailing ``:`` constrains to the session's active pane.
+            return f"={self.session}:"
         if self.pane is None:
-            return f"{self.session}:{self.window}"
-        return f"{self.session}:{self.window}.{self.pane}"
+            return f"={self.session}:{self.window}"
+        return f"={self.session}:{self.window}.{self.pane}"
 
     def __str__(self) -> str:
         return self.as_tmux_target()

@@ -110,7 +110,7 @@ command, pid, cwd, active flag).
 $ tb show work
 work   1 windows, 1 attached
 W  P  WINDOW-NAME  CMD   PID    CWD            ACTIVE
-0  0  bash         vim   12345  /workspace/user/proj   True
+0  0  bash         vim   12345  /workspace/proj  True
 ```
 
 #### `tb capture <target> [-n LINES] [--ansi]`
@@ -247,7 +247,11 @@ $ tb exec work --json --timeout 30 -- "pytest -q tests/core"
 - **Sentinel** (default when the pane is running a shell): wraps the
   command in `printf` markers and waits for the END sentinel to appear in
   the scrollback. Returns the real `exit_status` and the output captured
-  between the markers. Reliable — "saw the sentinel, we're done."
+  between the markers. Reliable — "saw the sentinel, we're done." If the
+  command emits more than the ~5000-line capture window holds, the START
+  marker scrolls off the top; the result then carries `"truncated": true`
+  (and the plain-mode status line shows `TRUNCATED`) so a partial capture
+  is never mistaken for the complete output.
 - **Idle** (used for non-shell panes, e.g. a REPL): sends the command,
   polls until the pane has been silent for `--idle-sec` seconds (default 2),
   returns the captured diff. `exit_status` is `null` in this mode —
@@ -428,7 +432,7 @@ Prose summary suitable for LLM context:
 ```
 $ tb describe work
 Session 'work': 1 windows, 1 attached, idle 12s.
-  * 0.0 bash  cmd=vim  pid=12345  cwd=/workspace/user/proj
+  * 0.0 bash  cmd=vim  pid=12345  cwd=/workspace/proj
 ttyd: port 7702, running (pid 881122)
 ```
 

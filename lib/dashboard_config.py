@@ -49,8 +49,6 @@ DEFAULTS: dict[str, Any] = {
     "show_topbar_refresh": False,
     "show_topbar_restart": False,
     "show_topbar_os_restart": True,
-    "show_launch_worker": False,
-    "show_launch_worker_yolo": False,
     "show_launch_codex": False,
     "show_launch_codex_yolo": False,
     "show_launch_kimi": False,

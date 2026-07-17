@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import shutil
 import sys
 import time
@@ -80,10 +81,19 @@ def _locked_registry():
             data.setdefault("next_port", config.TTYD_PORT_START)
 
             def save() -> None:
+                # Serialise *before* truncating: a json error (or any
+                # exception building the payload) then leaves the existing
+                # registry untouched rather than blanked. We rewrite the
+                # locked fd in place instead of the usual write-temp-then-
+                # rename dance because the fcntl lock is held on this inode —
+                # renaming a fresh file over the path would let a concurrent
+                # waiter lock a *different* inode and break mutual exclusion.
+                payload = json.dumps(data, indent=2, sort_keys=True)
                 f.seek(0)
                 f.truncate()
-                json.dump(data, f, indent=2, sort_keys=True)
+                f.write(payload)
                 f.flush()
+                os.fsync(f.fileno())
 
             yield data, save
         finally:

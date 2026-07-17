@@ -123,9 +123,11 @@ def exec_sentinel(target: Target, command: str,
         return {"ok": False, "error": state["err"]}
     m = state["match"]
     if m is not None:
+        text, truncated = _extract(state["content"], start, m)
         return {
             "exit_status": int(m.group(1)),
-            "output": _extract(state["content"], start, m),
+            "output": text,
+            "truncated": truncated,
             "duration": round(time.monotonic() - t0, 3),
             "strategy": "sentinel",
         }
@@ -138,8 +140,16 @@ def exec_sentinel(target: Target, command: str,
     raise Timeout(f"exec timed out after {timeout_sec}s waiting for END sentinel")
 
 
-def _extract(content: str, start_marker: str, end_match: re.Match) -> str:
-    """Return the text between the last START marker and the END match."""
+def _extract(content: str, start_marker: str, end_match: re.Match) -> tuple[str, bool]:
+    """Return ``(output, truncated)`` for the text between START and END.
+
+    ``truncated`` is True when the START marker is absent from the capture —
+    which means the command emitted more than the capture window (5000 lines)
+    holds, so START scrolled off the top. In that case the returned text is a
+    best-effort tail that also contains unrelated prior scrollback; callers
+    must surface the flag so a consumer never mistakes a partial capture for
+    the command's complete output.
+    """
     # The START marker may appear twice (the wrapped command line echoed
     # back + the printf's newline-prefixed emission). Use the LAST occurrence
     # before the END match to pick the genuine start of captured output.
@@ -147,14 +157,51 @@ def _extract(content: str, start_marker: str, end_match: re.Match) -> str:
     search_region = content[:end_line_start]
     idx = search_region.rfind(start_marker)
     if idx < 0:
-        # Couldn't find START — return everything preceding END minus the
-        # wrapped command echo line.
-        return search_region.rstrip("\n")
+        # Couldn't find START — output overflowed the capture window. Return
+        # everything preceding END (best effort) and flag it as truncated.
+        return search_region.rstrip("\n"), True
     # Skip past the START line (marker + newline).
     after_start = idx + len(start_marker)
     if after_start < len(content) and content[after_start] == "\n":
         after_start += 1
-    return content[after_start:end_line_start].rstrip("\n")
+    return content[after_start:end_line_start].rstrip("\n"), False
+
+
+def _rfind_block(lines: list[str], block: list[str]) -> int:
+    """Index of the LAST start position where ``block`` occurs contiguously in
+    ``lines``, or -1. ``block`` is assumed non-empty and no longer than lines.
+    """
+    first = block[0]
+    for i in range(len(lines) - len(block), -1, -1):
+        if lines[i] == first and lines[i:i + len(block)] == block:
+            return i
+    return -1
+
+
+def _new_lines(before_lines: list[str], after_lines: list[str]) -> list[str]:
+    """Return the lines in ``after_lines`` that are new since ``before_lines``.
+
+    The idle strategy diffs two captures of the same scrolling pane. The
+    pre-send content's tail still sits somewhere in the post-send capture
+    (unless it scrolled off), so we locate the END of that content and treat
+    everything below it as the command's output.
+
+    We anchor on the *largest trailing block* of ``before_lines`` that still
+    appears in ``after_lines`` — matching a multi-line block instead of the
+    single last line (the previous approach) makes a coincidental collision
+    with the command's own output vanishingly unlikely, while shrinking the
+    block handles the case where the top of the pre-send content scrolled off.
+    Among equal-length matches we take the LAST, since the genuine pre-send
+    content is the most recent occurrence before new output appears.
+    """
+    if not before_lines or before_lines == [""]:
+        return after_lines
+    max_k = min(len(before_lines), len(after_lines))
+    for k in range(max_k, 0, -1):
+        pos = _rfind_block(after_lines, before_lines[-k:])
+        if pos != -1:
+            return after_lines[pos + k:]
+    return after_lines
 
 
 # -----------------------------------------------------------------------------
@@ -188,8 +235,10 @@ def exec_idle(target: Target, command: str,
     if not ok:
         return {"ok": False, "error": err}
 
-    # Track the pane hash and the monotonic time of the last observed change.
-    state: dict = {"hash": None, "last_change": time.monotonic(), "err": None, "capture": ""}
+    # Track the last captured content and the monotonic time it last changed.
+    # Compare content directly rather than its hash() — hash() risks a
+    # (tiny) collision that would falsely read the pane as quiet.
+    state: dict = {"prev": None, "last_change": time.monotonic(), "err": None, "capture": ""}
 
     def check_idle() -> tuple[bool, str]:
         ok, snap = sessions.capture_target(target, lines=5000)
@@ -197,10 +246,9 @@ def exec_idle(target: Target, command: str,
             state["err"] = snap
             return True, snap  # break out; caller checks state["err"]
         state["capture"] = snap
-        h = hash(snap)
         now = time.monotonic()
-        if h != state["hash"]:
-            state["hash"] = h
+        if snap != state["prev"]:
+            state["prev"] = snap
             state["last_change"] = now
         return (now - state["last_change"] >= idle_sec), snap
 
@@ -213,20 +261,9 @@ def exec_idle(target: Target, command: str,
             sessions.send_keys(target, "C-c")
         raise Timeout(f"exec timed out after {timeout_sec}s (idle strategy)")
 
-    # New content = everything after the last line we saw pre-send.
+    # New content = everything after the pre-send capture's content.
     after_lines = after.rstrip("\n").split("\n")
-    anchor = before_tail[-1] if before_tail else ""
-    idx = -1
-    if anchor:
-        # Scan from the end — the anchor most likely sits near the top of
-        # the newly captured text since the command scrolled output below.
-        for i, line in enumerate(after_lines):
-            if line == anchor:
-                idx = i
-    if idx >= 0:
-        diff = "\n".join(after_lines[idx + 1:])
-    else:
-        diff = after
+    diff = "\n".join(_new_lines(before_tail, after_lines))
 
     return {
         "exit_status": None,  # unknown in idle mode

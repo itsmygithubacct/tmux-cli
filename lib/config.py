@@ -40,6 +40,14 @@ TTYD_BIN = Path.home() / ".local" / "bin" / "ttyd"
 
 def ensure_dirs() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+    # STATE_DIR holds sensitive data — the config-lock secret, session logs
+    # (terminal output), the ports registry, and agent conversations. Lock it
+    # to owner-only so other local users can't read it. mkdir's mode is masked
+    # by umask and ignored when the dir already exists, so enforce explicitly.
+    try:
+        STATE_DIR.chmod(0o700)
+    except OSError:
+        pass
     AGENT_LOG_DIR.mkdir(parents=True, exist_ok=True)
     AGENT_CONVERSATIONS_DIR.mkdir(parents=True, exist_ok=True)
     PID_DIR.mkdir(parents=True, exist_ok=True)

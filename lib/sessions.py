@@ -211,6 +211,12 @@ def _validate_name(name: str) -> None:
         raise UsageError(
             "session name must be non-empty and contain no whitespace, ':' or '.'",
         )
+    # A leading '-' would be parsed as an option by tmux in the positional
+    # ``new-session -s NAME`` / ``rename-session NEW`` slots; a leading '='
+    # collides with the exact-match prefix that targeting uses (``=name``),
+    # making the session unaddressable. Reject both.
+    if name[0] in "-=":
+        raise UsageError("session name must not start with '-' or '='")
 
 
 def kill(session: str) -> tuple[bool, str]:
@@ -463,25 +469,28 @@ def wait_idle(target: Target, idle_sec: float,
               timeout_sec: float = 0) -> tuple[bool, str]:
     """Block until pane has been quiet for ``idle_sec`` seconds.
 
-    Quiet = no change in ``session_activity`` *and* no change in capture hash
-    (the activity timer alone skips output that tmux doesn't mark as
-    activity). ``timeout_sec`` of 0 means no timeout.
+    Quiet = no change in the captured pane content (the ``session_activity``
+    timer alone skips output that tmux doesn't mark as activity).
+    ``timeout_sec`` of 0 means no timeout.
     """
     if not exists(target.session):
         return False, f"no such session: {target.session}"
 
     deadline = time.time() + timeout_sec if timeout_sec > 0 else None
-    last_hash = None
+    # Compare captured content directly rather than its ``hash()``: hash()
+    # carries a (tiny) collision risk that would falsely read "quiet", and a
+    # 200-line capture is cheap to hold. ``None`` sentinel forces the first
+    # observation to count as a change.
+    last_content = None
     last_change = time.time()
     poll = 0.2
     while True:
         ok, content = capture_target(target, lines=200)
         if not ok:
             return False, content
-        h = hash(content)
         now = time.time()
-        if h != last_hash:
-            last_hash = h
+        if content != last_content:
+            last_content = content
             last_change = now
         if now - last_change >= idle_sec:
             return True, ""
