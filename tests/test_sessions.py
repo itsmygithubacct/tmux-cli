@@ -63,7 +63,7 @@ class ListSessionsDedupTests(unittest.TestCase):
         names = sorted(r["name"] for r in out)
         # scratch (ungrouped) and worker_code (primary) survive; the
         # orphan viewer is dropped, the worker_code viewer is dropped.
-        self.assertEqual(names, ["worker_code", "scratch"])
+        self.assertEqual(names, ["scratch", "worker_code"])
 
     def test_primary_wins_regardless_of_ordering(self):
         # Viewer comes first in tmux output, primary second — primary still wins.
