@@ -1,5 +1,6 @@
-"""Atomic write + safe-name round-trip helpers in lib/ttyd.py."""
+"""Atomic writes, safe names, and keyed lifecycle locks in lib/ttyd.py."""
 
+import gc
 import sys
 import tempfile
 import threading
@@ -10,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import lib.ttyd as ttyd  # noqa: E402
 from lib.ttyd import (  # noqa: E402
-    _atomic_write, _discard_start_lock, _safe, _start_lock, _unsafe,
+    _atomic_write, _safe, _start_lock, _unsafe,
 )
 
 
@@ -79,55 +80,75 @@ class StartLockTests(unittest.TestCase):
         t1.start(); t2.start(); t1.join(); t2.join()
         self.assertEqual(len(held), 2)
 
+    def test_waiter_keeps_the_same_registered_lock(self):
+        name = "inflight-waiter"
+        held = _start_lock(name)
+        held.acquire()
+        ready = threading.Event()
+        entered = threading.Event()
+        seen: list[threading.Lock] = []
 
-class DiscardStartLockTests(unittest.TestCase):
-    """The spawn-lock registry must not grow without bound — raw shells
-    get a fresh name every launch, so each must be reclaimed."""
+        def waiter():
+            lock = _start_lock(name)
+            seen.append(lock)
+            ready.set()
+            with lock:
+                entered.set()
 
-    def test_discard_removes_the_registration(self):
-        _start_lock("raw-shell-1-aaaa")
-        self.assertIn("raw-shell-1-aaaa", ttyd._start_locks)
-        _discard_start_lock("raw-shell-1-aaaa")
-        self.assertNotIn("raw-shell-1-aaaa", ttyd._start_locks)
+        thread = threading.Thread(target=waiter)
+        thread.start()
+        self.assertTrue(ready.wait(1))
+        self.assertIs(seen[0], held)
+        self.assertFalse(entered.is_set())
+        held.release()
+        thread.join(1)
+        self.assertTrue(entered.is_set())
 
-    def test_discard_unknown_session_is_noop(self):
-        _discard_start_lock("never-registered")  # must not raise
+    def test_registry_reclaims_unreferenced_locks(self):
+        name = "raw-shell-review-reclaim"
+        lock = _start_lock(name)
+        self.assertIn(name, ttyd._start_locks)
+        del lock
+        gc.collect()
+        self.assertNotIn(name, ttyd._start_locks)
 
-    def test_next_lock_after_discard_is_fresh(self):
-        first = _start_lock("rotate")
-        _discard_start_lock("rotate")
-        second = _start_lock("rotate")
-        self.assertIsNot(first, second)
-
-    def test_concurrent_holder_unaffected_by_discard(self):
-        # Discard only unregisters; a holder keeps its own reference and
-        # can still release cleanly.
-        lock = _start_lock("inflight")
-        with lock:
-            _discard_start_lock("inflight")  # pops the dict mid-hold
-            self.assertNotIn("inflight", ttyd._start_locks)
-        # Releasing after the discard must not raise.
-
-    def test_registry_bounded_across_many_raw_shells(self):
-        # Simulate the leak scenario: many unique raw-shell names, each
-        # discarded on stop — the registry must not accumulate them.
+    def test_registry_stays_bounded_for_unique_raw_shells(self):
+        prefix = "raw-shell-review-bounded-"
         for i in range(200):
-            name = f"raw-shell-{i}-x"
-            _start_lock(name)
-            _discard_start_lock(name)
-        leftover = [n for n in ttyd._start_locks if n.startswith("raw-shell-")]
+            lock = _start_lock(f"{prefix}{i}")
+            del lock
+        gc.collect()
+        leftover = [n for n in ttyd._start_locks if n.startswith(prefix)]
         self.assertEqual(leftover, [])
 
-    def test_stop_discards_the_lock(self):
+    def test_stop_waits_for_an_inflight_start_lock(self):
         from unittest import mock
-        _start_lock("work-x")
-        self.assertIn("work-x", ttyd._start_locks)
-        # read_pid None -> stop() takes the "already stopped" path after
-        # discarding the lock; pidfile unlink is a no-op on a missing file.
-        with mock.patch.object(ttyd, "read_pid", return_value=None):
-            result = ttyd.stop("work-x")
-        self.assertTrue(result["ok"])
-        self.assertNotIn("work-x", ttyd._start_locks)
+
+        name = "serialized-stop"
+        lock = _start_lock(name)
+        lock.acquire()
+        started = threading.Event()
+        read_called = threading.Event()
+        result: list[dict] = []
+
+        def read_pid(_name):
+            read_called.set()
+            return None
+
+        def run_stop():
+            started.set()
+            result.append(ttyd.stop(name))
+
+        with mock.patch.object(ttyd, "read_pid", side_effect=read_pid):
+            thread = threading.Thread(target=run_stop)
+            thread.start()
+            self.assertTrue(started.wait(1))
+            self.assertFalse(read_called.wait(0.05))
+            lock.release()
+            thread.join(1)
+
+        self.assertTrue(read_called.is_set())
+        self.assertTrue(result[0]["already_stopped"])
 
 
 class ReadPidTests(unittest.TestCase):

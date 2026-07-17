@@ -104,6 +104,49 @@ class ListSessionsDedupTests(unittest.TestCase):
         self.assertEqual(out[0]["activity"], 2500)
 
 
+class PasteBufferTests(unittest.TestCase):
+
+    def test_each_paste_uses_a_distinct_named_buffer(self):
+        ok = subprocess.CompletedProcess(["tmux"], 0, "", "")
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch.object(sessions.secrets, "token_hex",
+                               side_effect=["a" * 16, "b" * 16]), \
+             mock.patch.object(sessions.subprocess, "run", return_value=ok) as run:
+            self.assertTrue(sessions.paste_buffer(
+                sessions.Target(session="a"), "first")[0])
+            self.assertTrue(sessions.paste_buffer(
+                sessions.Target(session="b"), "second")[0])
+
+        commands = [call.args[0] for call in run.call_args_list]
+        first_buffer = commands[0][3]
+        second_buffer = commands[2][3]
+        self.assertNotEqual(first_buffer, second_buffer)
+        self.assertEqual(commands[1][4], first_buffer)
+        self.assertEqual(commands[3][4], second_buffer)
+
+    def test_failed_paste_deletes_its_private_buffer(self):
+        loaded = subprocess.CompletedProcess(["tmux"], 0, "", "")
+        failed = subprocess.CompletedProcess(
+            ["tmux"], 1, "", "no target pane")
+        deleted = subprocess.CompletedProcess(["tmux"], 0, "", "")
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch.object(sessions.secrets, "token_hex",
+                               return_value="c" * 16), \
+             mock.patch.object(
+                 sessions.subprocess, "run",
+                 side_effect=[loaded, failed, deleted],
+             ) as run:
+            ok, error = sessions.paste_buffer(
+                sessions.Target(session="work"), "payload")
+
+        self.assertFalse(ok)
+        self.assertIn("no target pane", error)
+        self.assertEqual(
+            run.call_args_list[2].args[0][:3],
+            ["tmux", "delete-buffer", "-b"],
+        )
+
+
 class TimeoutHandlingTests(unittest.TestCase):
 
     def test_exists_returns_false_on_timeout(self):

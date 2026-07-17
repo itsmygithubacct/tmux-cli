@@ -22,6 +22,9 @@ from lib import config as cfg  # noqa: E402
 from lib import extensions  # noqa: E402
 
 
+_OLD_HEAD = "1" * 40
+
+
 def _manifest(version: str, *, min_core: str = "0.7.1",
               state_paths: list[str] | None = None) -> str:
     payload = {
@@ -95,6 +98,8 @@ class UpdateTests(_IsolatedExt, unittest.TestCase):
 
         def run(args, **_kwargs):
             calls.append(list(args))
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, _OLD_HEAD + "\n", "")
             if args[:2] == ["git", "fetch"]:
                 return subprocess.CompletedProcess(args, 0, "", "")
             if args[:2] == ["git", "checkout"]:
@@ -109,14 +114,20 @@ class UpdateTests(_IsolatedExt, unittest.TestCase):
         self.assertEqual(result.from_version, "0.7.1")
         self.assertEqual(result.to_version, "0.7.2")
         self.assertEqual(result.via, "clone")
-        # First call is fetch, second is checkout.
-        self.assertEqual(calls[0][:2], ["git", "fetch"])
-        self.assertEqual(calls[1][:2], ["git", "checkout"])
+        self.assertEqual(calls[0][:2], ["git", "rev-parse"])
+        self.assertEqual(
+            calls[1],
+            ["git", "fetch", "--depth", "50", "origin", "v0.7.3-agent"],
+        )
+        self.assertEqual(
+            calls[2], ["git", "checkout", "--detach", "FETCH_HEAD"])
 
     def test_fetch_failure_raises_fetch_stage(self):
         self._install_fake("0.7.1")
 
         def run(args, **_kwargs):
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, _OLD_HEAD + "\n", "")
             if args[:2] == ["git", "fetch"]:
                 return subprocess.CompletedProcess(
                     args, 128, "", "fatal: unable to access")
@@ -129,14 +140,14 @@ class UpdateTests(_IsolatedExt, unittest.TestCase):
 
     def test_submodule_path_calls_update_remote(self):
         self._install_fake("0.7.1", submodule=True)
-        with mock.patch(
-            "subprocess.run",
-            return_value=subprocess.CompletedProcess(
-                ["git"], 0, "", ""),
-        ) as run:
+        def result(args, **_kwargs):
+            stdout = _OLD_HEAD + "\n" if args[:2] == ["git", "rev-parse"] else ""
+            return subprocess.CompletedProcess(args, 0, stdout, "")
+
+        with mock.patch("subprocess.run", side_effect=result) as run:
             result = extensions.update("agent", core_version="0.7.1")
         self.assertEqual(result.via, "submodule")
-        args, _ = run.call_args
+        args, _ = run.call_args_list[1]
         self.assertEqual(args[0][:4],
                          ["git", "submodule", "update", "--remote"])
 
@@ -146,7 +157,8 @@ class UpdateTests(_IsolatedExt, unittest.TestCase):
         def run(args, **_kwargs):
             # Leave the manifest at 0.7.1 — fetch + checkout succeed but
             # no new version landed.
-            return subprocess.CompletedProcess(args, 0, "", "")
+            stdout = _OLD_HEAD + "\n" if args[:2] == ["git", "rev-parse"] else ""
+            return subprocess.CompletedProcess(args, 0, stdout, "")
 
         with mock.patch("subprocess.run", side_effect=run):
             result = extensions.update("agent", core_version="0.7.1")
@@ -158,15 +170,40 @@ class UpdateTests(_IsolatedExt, unittest.TestCase):
         path = self._install_fake("0.7.1")
 
         def run(args, **_kwargs):
-            if args[:2] == ["git", "checkout"]:
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, _OLD_HEAD + "\n", "")
+            if args == ["git", "checkout", "--detach", "FETCH_HEAD"]:
                 (path / "manifest.json").write_text(
                     _manifest("99.0.0", min_core="99.0.0"))
+            elif args == ["git", "checkout", "--detach", _OLD_HEAD]:
+                (path / "manifest.json").write_text(_manifest("0.7.1"))
             return subprocess.CompletedProcess(args, 0, "", "")
 
         with mock.patch("subprocess.run", side_effect=run):
             with self.assertRaises(extensions.UpdateError) as ctx:
                 extensions.update("agent", core_version="0.7.1")
         self.assertEqual(ctx.exception.stage, "validate")
+        restored = json.loads((path / "manifest.json").read_text())
+        self.assertEqual(restored["version"], "0.7.1")
+
+    def test_checkout_failure_attempts_rollback(self):
+        self._install_fake("0.7.1")
+        calls: list[list[str]] = []
+
+        def run(args, **_kwargs):
+            calls.append(list(args))
+            if args[:2] == ["git", "rev-parse"]:
+                return subprocess.CompletedProcess(args, 0, _OLD_HEAD + "\n", "")
+            if args == ["git", "checkout", "--detach", "FETCH_HEAD"]:
+                return subprocess.CompletedProcess(args, 1, "", "checkout failed")
+            return subprocess.CompletedProcess(args, 0, "", "")
+
+        with mock.patch("subprocess.run", side_effect=run):
+            with self.assertRaises(extensions.UpdateError) as ctx:
+                extensions.update("agent", core_version="0.7.1")
+        self.assertEqual(ctx.exception.stage, "checkout")
+        self.assertIn(
+            ["git", "checkout", "--detach", _OLD_HEAD], calls)
 
 
 class UninstallTests(_IsolatedExt, unittest.TestCase):

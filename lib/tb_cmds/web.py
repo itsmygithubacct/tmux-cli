@@ -13,11 +13,25 @@ def _host() -> str:
     return os.environ.get("TB_DASHBOARD_HOST", "localhost")
 
 
+def _bind(args: argparse.Namespace) -> str:
+    """Listener address for standalone ttyd processes.
+
+    Keep URL presentation (``TB_DASHBOARD_HOST``) separate from the security
+    boundary. Remote exposure must be explicit through ``--bind`` or
+    ``TB_TTYD_BIND``; the default is loopback-only.
+    """
+    return args.bind or os.environ.get("TB_TTYD_BIND", "127.0.0.1")
+
+
 def cmd_web_start(args: argparse.Namespace) -> int:
     if not sessions.exists(args.session):
         raise SessionNotFound(f"no such session: {args.session}")
     tls_paths = tls.load_tls_paths(cli_cert=args.cert, cli_key=args.key)
-    r = ttyd.start(args.session, tls_paths=tls_paths)
+    r = ttyd.start(
+        args.session,
+        tls_paths=tls_paths,
+        bind_addr=_bind(args),
+    )
     if not r.get("ok"):
         raise TmuxFailed(r.get("error", "ttyd start failed"))
     port = r.get("port")
@@ -76,6 +90,11 @@ def register(sub, common) -> None:
                          help="TLS cert for ttyd. Also honours $TMUX_BROWSE_CERT.")
     p_start.add_argument("--key", metavar="PATH", default=None,
                          help="TLS key for ttyd. Also honours $TMUX_BROWSE_KEY.")
+    p_start.add_argument(
+        "--bind", metavar="ADDR", default=None,
+        help="ttyd listen address (default: 127.0.0.1; also honours "
+             "$TB_TTYD_BIND). Non-loopback addresses expose a writable terminal.",
+    )
     p_start.set_defaults(func=cmd_web_start)
 
     # `stop` only signals a ttyd PID and `url` only reads the ports registry;

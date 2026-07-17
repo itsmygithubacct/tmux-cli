@@ -196,6 +196,40 @@ class ServerGateTests(_StubMixin, unittest.TestCase):
         stub.assert_called_once()
 
 
+class WebBindTests(unittest.TestCase):
+
+    def _args(self, bind=None):
+        return types.SimpleNamespace(
+            session="work", cert=None, key=None, bind=bind,
+            json=False, quiet=True,
+        )
+
+    def test_web_start_binds_ttyd_to_loopback_by_default(self):
+        result = {
+            "ok": True, "port": 7700, "scheme": "http", "pid": 123,
+        }
+        with mock.patch.object(web.sessions, "exists", return_value=True), \
+             mock.patch.object(web.tls, "load_tls_paths", return_value=None), \
+             mock.patch.object(web.ttyd, "start", return_value=result) as start, \
+             mock.patch.object(sys, "stdout", io.StringIO()), \
+             mock.patch.dict(os.environ, {}, clear=True):
+            web.cmd_web_start(self._args())
+
+        start.assert_called_once_with(
+            "work", tls_paths=None, bind_addr="127.0.0.1")
+
+    def test_explicit_bind_wins_over_environment(self):
+        with mock.patch.dict(os.environ, {"TB_TTYD_BIND": "192.0.2.10"}):
+            self.assertEqual(web._bind(self._args()), "192.0.2.10")
+            self.assertEqual(web._bind(self._args("0.0.0.0")), "0.0.0.0")
+
+    def test_parser_accepts_explicit_web_bind(self):
+        args = _ns(tb._build_parser(), [
+            "web", "start", "work", "--bind", "127.0.0.1",
+        ])
+        self.assertEqual(args.bind, "127.0.0.1")
+
+
 class AVerbTests(unittest.TestCase):
     def _args(self, **overrides):
         args = {

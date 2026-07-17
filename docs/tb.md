@@ -244,7 +244,8 @@ $ tb exec work --json --timeout 30 -- "pytest -q tests/core"
 
 **Two strategies**, auto-selected from `pane_current_command`:
 
-- **Sentinel** (default when the pane is running a shell): wraps the
+- **Sentinel** (default for Bourne-compatible shells such as bash, zsh, sh,
+  dash, and ksh): wraps the
   command in `printf` markers and waits for the END sentinel to appear in
   the scrollback. Returns the real `exit_status` and the output captured
   between the markers. Reliable — "saw the sentinel, we're done." If the
@@ -252,7 +253,8 @@ $ tb exec work --json --timeout 30 -- "pytest -q tests/core"
   marker scrolls off the top; the result then carries `"truncated": true`
   (and the plain-mode status line shows `TRUNCATED`) so a partial capture
   is never mistaken for the complete output.
-- **Idle** (used for non-shell panes, e.g. a REPL): sends the command,
+- **Idle** (used for non-shell panes and non-Bourne shells such as fish/csh):
+  sends the command,
   polls until the pane has been silent for `--idle-sec` seconds (default 2),
   returns the captured diff. `exit_status` is `null` in this mode —
   silence isn't a proof of completion for backgrounded work.
@@ -373,13 +375,18 @@ $ tb watch work
 
 ### Web (dashboard-integrated)
 
-#### `tb web start <session>`
+#### `tb web start <session> [--bind ADDR]`
 
 Ensures the dashboard's ttyd is running for this session. Idempotent.
 Prints the URL (or the JSON payload). Uses the same `~/.tmux-browse/ports.json`
 registry as the dashboard, so the port is stable. In `--json` mode the payload
 includes `session`, `port`, `pid`, `already`, `scheme`, and `url`, so callers
 do not need to guess whether the ttyd endpoint is `http` or `https`.
+
+The ttyd listener binds to `127.0.0.1` by default. Remote exposure must be
+explicit with `--bind ADDR` or `TB_TTYD_BIND`; remember that this endpoint is
+a writable terminal, so non-loopback binds require an appropriate firewall or
+authentication proxy.
 
 #### `tb web stop <session>`
 
@@ -443,6 +450,7 @@ With `--json`, returns both the structured data and the rendered text.
 | Variable | Effect |
 |---|---|
 | `TB_DASHBOARD_HOST` | host used when building URLs in `tb web url/start` (default `localhost`) |
+| `TB_TTYD_BIND` | listener address for `tb web start` (default `127.0.0.1`; `--bind` takes precedence) |
 | `TB_COLOR` | `always` / `never` to override TTY detection for colour output |
 | `NO_COLOR` | if set (any value), disables colour |
 

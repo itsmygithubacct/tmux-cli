@@ -98,8 +98,8 @@ class InstallResult:
 class UpdateError(RuntimeError):
     """Raised when :func:`update` can't advance an extension.
 
-    ``stage``: ``fetch`` / ``checkout`` / ``submodule`` / ``validate``
-    / ``missing`` / ``unknown``.
+    ``stage``: ``prepare`` / ``fetch`` / ``checkout`` / ``submodule`` /
+    ``validate`` / ``missing`` / ``unknown``.
     """
 
     def __init__(self, stage: str, msg: str):
@@ -428,6 +428,48 @@ def _rmtree_safe(path: Path) -> None:
         pass
 
 
+def _git_head(path: Path, *, timeout: float) -> str:
+    """Return the commit currently checked out at an extension path."""
+    try:
+        r = subprocess.run(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            cwd=path, capture_output=True, text=True, timeout=min(timeout, 30.0),
+        )
+    except subprocess.TimeoutExpired:
+        raise UpdateError("prepare", "reading current extension commit timed out")
+    except FileNotFoundError:
+        raise UpdateError("prepare", "git not on PATH")
+    head = (r.stdout or "").strip()
+    if r.returncode != 0 or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head):
+        detail = (r.stderr or r.stdout).strip() or "extension has no valid HEAD"
+        raise UpdateError("prepare", detail)
+    return head
+
+
+def _restore_git_head(path: Path, head: str) -> str | None:
+    """Best-effort rollback; return an error string instead of raising."""
+    try:
+        r = subprocess.run(
+            ["git", "checkout", "--detach", head],
+            cwd=path, capture_output=True, text=True, timeout=30.0,
+        )
+    except subprocess.TimeoutExpired:
+        return "rollback checkout timed out"
+    except FileNotFoundError:
+        return "rollback failed: git not on PATH"
+    if r.returncode != 0:
+        return (r.stderr or r.stdout).strip() or "rollback checkout failed"
+    return None
+
+
+def _update_error_after_rollback(stage: str, message: str, *,
+                                 path: Path, old_head: str) -> UpdateError:
+    rollback_error = _restore_git_head(path, old_head)
+    if rollback_error:
+        message = f"{message}; {rollback_error}"
+    return UpdateError(stage, message)
+
+
 def update(name: str, *, core_version: str | None = None,
            timeout: float = 120.0) -> UpdateResult:
     """Advance the installed extension to its catalog-pinned ref.
@@ -454,17 +496,19 @@ def update(name: str, *, core_version: str | None = None,
             "missing",
             f"{path} is not installed — run install first")
     before = _current_version(name)
+    old_head = _git_head(path, timeout=timeout)
 
     if submodule.is_submodule_path(name):
         ok, stderr = submodule.submodule_update_remote(name, timeout=timeout)
         if not ok:
-            raise UpdateError("submodule", stderr)
+            raise _update_error_after_rollback(
+                "submodule", stderr, path=path, old_head=old_head)
         via = "submodule"
     else:
         ref = spec.get("pinned_ref", "main")
         try:
             r = subprocess.run(
-                ["git", "fetch", "--depth", "50", "origin"],
+                ["git", "fetch", "--depth", "50", "origin", ref],
                 cwd=path, capture_output=True, text=True, timeout=timeout,
             )
         except subprocess.TimeoutExpired:
@@ -476,22 +520,28 @@ def update(name: str, *, core_version: str | None = None,
             raise UpdateError("fetch", (r.stderr or r.stdout).strip())
         try:
             r = subprocess.run(
-                ["git", "checkout", ref],
+                ["git", "checkout", "--detach", "FETCH_HEAD"],
                 cwd=path, capture_output=True, text=True, timeout=30.0,
             )
         except subprocess.TimeoutExpired:
-            raise UpdateError("checkout", "git checkout timed out")
+            raise _update_error_after_rollback(
+                "checkout", "git checkout timed out",
+                path=path, old_head=old_head)
         if r.returncode != 0:
-            raise UpdateError("checkout", (r.stderr or r.stdout).strip())
+            raise _update_error_after_rollback(
+                "checkout", (r.stderr or r.stdout).strip(),
+                path=path, old_head=old_head)
         via = "clone"
 
     try:
         manifest = Manifest.load(path / "manifest.json")
         manifest.validate(core_version=core_version or __version__)
     except ManifestError as e:
-        raise UpdateError("validate", str(e))
+        raise _update_error_after_rollback(
+            "validate", str(e), path=path, old_head=old_head)
     except Exception as e:
-        raise UpdateError("validate", str(e))
+        raise _update_error_after_rollback(
+            "validate", str(e), path=path, old_head=old_head)
     return UpdateResult(
         name=name, from_version=before, to_version=manifest.version,
         path=path, via=via, changed=(before != manifest.version),

@@ -140,7 +140,7 @@ def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
         if relative:
             members.append((member, relative))
 
-    if not found_lib:
+    if not found_lib or not any(member.isfile() for member, _ in members):
         raise _NoLibError(root)
 
     with tempfile.TemporaryDirectory() as td:
@@ -168,6 +168,80 @@ def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
         shutil.copytree(src_lib, dest_lib, dirs_exist_ok=True)
 
 
+def _path_present(path: Path) -> bool:
+    """Like ``Path.exists()``, but also true for a broken symlink."""
+    return path.exists() or path.is_symlink()
+
+
+def _remove_path(path: Path) -> None:
+    """Remove a file/symlink/tree during rollback."""
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.exists():
+        shutil.rmtree(path)
+
+
+def _install_staged(staged_tb: Path, staged_lib: Path | None,
+                    dest: Path) -> None:
+    """Replace the installed files, restoring the old version on failure.
+
+    Every rename stays on ``dest``'s filesystem. Old paths live inside the
+    unique staging directory until both new paths are installed, so an I/O
+    failure cannot leave a new ``tb.py`` paired with an old ``lib/`` (or the
+    inverse).
+    """
+    local_tb = dest / "tb.py"
+    local_lib = dest / "lib"
+    backup_dir = staged_tb.parent / "backup"
+    backup_dir.mkdir()
+    backup_tb = backup_dir / "tb.py"
+    backup_lib = backup_dir / "lib"
+
+    moved_tb = False
+    moved_lib = False
+    installed_tb = False
+    installed_lib = False
+    try:
+        if _path_present(local_tb):
+            local_tb.replace(backup_tb)
+            moved_tb = True
+        if staged_lib is not None and _path_present(local_lib):
+            local_lib.replace(backup_lib)
+            moved_lib = True
+
+        if staged_lib is not None:
+            staged_lib.replace(local_lib)
+            installed_lib = True
+        staged_tb.replace(local_tb)
+        installed_tb = True
+    except OSError as install_error:
+        rollback_errors: list[str] = []
+        for installed, path in (
+            (installed_tb, local_tb),
+            (installed_lib, local_lib),
+        ):
+            if installed:
+                try:
+                    _remove_path(path)
+                except OSError as e:
+                    rollback_errors.append(f"remove {path}: {e}")
+        for moved, backup, original in (
+            (moved_lib, backup_lib, local_lib),
+            (moved_tb, backup_tb, local_tb),
+        ):
+            if moved:
+                try:
+                    backup.replace(original)
+                except OSError as e:
+                    rollback_errors.append(f"restore {original}: {e}")
+        if rollback_errors:
+            detail = "; ".join(rollback_errors)
+            raise OSError(
+                f"{install_error}; rollback also failed: {detail}",
+            ) from install_error
+        raise
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="update_tb.py",
@@ -192,7 +266,6 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # network / parse / no-tag
         return _die(f"could not determine ref: {e}")
 
-    local_tb = dest / "tb.py"
     local_ver = None
     local_lib = dest / "lib" / "version.py"
     if local_lib.is_file():
@@ -226,20 +299,32 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         dest.mkdir(parents=True, exist_ok=True)
-        # tb.py — write via temp + replace so a failed write can't truncate it.
-        tmp = dest / ".tb.py.partial"
-        tmp.write_text(tb_text, encoding="utf-8")
-        tmp.replace(local_tb)
-        local_tb.chmod(0o755)
-        wrote = ["tb.py"]
-
-        if not args.file_only:
+        with tempfile.TemporaryDirectory(prefix=".update-tb-", dir=dest) as td:
+            stage = Path(td)
+            staged_tb = stage / "tb.py"
             try:
-                _extract_lib(tf, root, dest / "lib")
-            except _NoLibError:
-                return _die(f"lib/ not found in {args.repo}@{ref}")
-            except (tarfile.TarError, OSError) as e:
-                return _die(f"refusing to extract lib/: {e}")
+                staged_tb.write_text(tb_text, encoding="utf-8")
+                staged_tb.chmod(0o755)
+            except OSError as e:
+                return _die(f"could not stage tb.py: {e}")
+
+            staged_lib: Path | None = None
+            if not args.file_only:
+                staged_lib = stage / "lib"
+                try:
+                    _extract_lib(tf, root, staged_lib)
+                except _NoLibError:
+                    return _die(f"lib/ not found in {args.repo}@{ref}")
+                except (tarfile.TarError, OSError) as e:
+                    return _die(f"refusing to extract lib/: {e}")
+
+            try:
+                _install_staged(staged_tb, staged_lib, dest)
+            except OSError as e:
+                return _die(f"could not install update: {e}")
+
+        wrote = ["tb.py"]
+        if not args.file_only:
             wrote.append("lib/")
 
     _say(f"wrote {', '.join(wrote)} ({pulled_ver or ref}) to {dest}")

@@ -12,6 +12,7 @@ import tarfile
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 _BIN = Path(__file__).resolve().parent.parent / "bin" / "update_tb.py"
 _spec = importlib.util.spec_from_file_location("update_tb", _BIN)
@@ -28,6 +29,22 @@ def _make_tar(members: dict[str, bytes]) -> tarfile.TarFile:
             info = tarfile.TarInfo(name)
             info.size = len(content)
             tf.addfile(info, io.BytesIO(content))
+    buf.seek(0)
+    return tarfile.open(fileobj=buf, mode="r")
+
+
+def _make_tar_with_symlink(members: dict[str, bytes],
+                           link_name: str) -> tarfile.TarFile:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w") as tf:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(content)
+            tf.addfile(info, io.BytesIO(content))
+        info = tarfile.TarInfo(link_name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = "../../outside"
+        tf.addfile(info)
     buf.seek(0)
     return tarfile.open(fileobj=buf, mode="r")
 
@@ -118,6 +135,79 @@ class VersionHelperTests(unittest.TestCase):
         with tf:
             self.assertIsNone(
                 update_tb._extract_member_text(tf, "root", "lib/nope.py"))
+
+
+class TransactionalInstallTests(unittest.TestCase):
+
+    def test_rejected_lib_does_not_replace_existing_tb(self):
+        tf = _make_tar_with_symlink({
+            "root/tb.py": b"NEW TB\n",
+            "root/lib/version.py": b'__version__ = "2.0"\n',
+        }, "root/lib/link")
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            (dest / "tb.py").write_text("OLD TB\n")
+            (dest / "lib").mkdir()
+            (dest / "lib" / "version.py").write_text(
+                '__version__ = "1.0"\n')
+            with mock.patch.object(update_tb, "_download_tree", return_value=tf):
+                rc = update_tb.main([
+                    "--repo", "example/project", "--ref", "bad", "--dir", d,
+                ])
+
+            self.assertEqual(rc, 1)
+            self.assertEqual((dest / "tb.py").read_text(), "OLD TB\n")
+            self.assertIn("1.0", (dest / "lib" / "version.py").read_text())
+
+    def test_success_replaces_tb_and_the_complete_library(self):
+        tf = _make_tar({
+            "root/tb.py": b"NEW TB\n",
+            "root/lib/version.py": b'__version__ = "2.0"\n',
+            "root/lib/current.py": b"CURRENT = True\n",
+        })
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            (dest / "tb.py").write_text("OLD TB\n")
+            (dest / "lib").mkdir()
+            (dest / "lib" / "stale.py").write_text("STALE = True\n")
+            with mock.patch.object(update_tb, "_download_tree", return_value=tf):
+                rc = update_tb.main([
+                    "--repo", "example/project", "--ref", "good", "--dir", d,
+                ])
+
+            self.assertEqual(rc, 0)
+            self.assertEqual((dest / "tb.py").read_text(), "NEW TB\n")
+            self.assertTrue((dest / "lib" / "current.py").is_file())
+            self.assertFalse((dest / "lib" / "stale.py").exists())
+
+    def test_install_io_failure_restores_both_old_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            dest = Path(d)
+            stage = dest / "stage"
+            stage.mkdir()
+            staged_tb = stage / "tb.py"
+            staged_tb.write_text("NEW TB\n")
+            staged_lib = stage / "lib"
+            staged_lib.mkdir()
+            (staged_lib / "version.py").write_text("NEW LIB\n")
+            (dest / "tb.py").write_text("OLD TB\n")
+            (dest / "lib").mkdir()
+            (dest / "lib" / "version.py").write_text("OLD LIB\n")
+
+            real_replace = Path.replace
+
+            def fail_tb_install(path, target):
+                if path == staged_tb:
+                    raise OSError("simulated tb install failure")
+                return real_replace(path, target)
+
+            with mock.patch.object(Path, "replace", new=fail_tb_install):
+                with self.assertRaises(OSError):
+                    update_tb._install_staged(staged_tb, staged_lib, dest)
+
+            self.assertEqual((dest / "tb.py").read_text(), "OLD TB\n")
+            self.assertEqual(
+                (dest / "lib" / "version.py").read_text(), "OLD LIB\n")
 
 
 if __name__ == "__main__":

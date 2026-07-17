@@ -1,6 +1,7 @@
 """Pure helpers in exec_runner: _extract, is_shell_pane, _poll_until."""
 
 import re
+import subprocess
 import sys
 import time
 import unittest
@@ -21,8 +22,12 @@ class IsShellPaneTests(unittest.TestCase):
             return exec_runner.is_shell_pane(Target(session="w"))
 
     def test_common_shells_recognized(self):
-        for shell in ("bash", "zsh", "fish", "sh", "dash", "ksh"):
+        for shell in ("bash", "zsh", "sh", "dash", "ksh", "ash"):
             self.assertTrue(self._run(shell), shell)
+
+    def test_non_bourne_shells_use_idle_strategy(self):
+        for shell in ("fish", "csh", "tcsh"):
+            self.assertFalse(self._run(shell), shell)
 
     def test_case_insensitive(self):
         self.assertTrue(self._run("BASH"))
@@ -35,6 +40,28 @@ class IsShellPaneTests(unittest.TestCase):
 
     def test_none_is_not_shell(self):
         self.assertFalse(self._run(None))
+
+
+class SentinelWrapperTests(unittest.TestCase):
+
+    def _run(self, command: str) -> subprocess.CompletedProcess:
+        wrapped = exec_runner._wrap_sentinel(
+            command, "__TB_test_START__", "test")
+        return subprocess.run(
+            ["bash", "-c", wrapped], capture_output=True, text=True,
+            timeout=5,
+        )
+
+    def test_background_command_keeps_valid_shell_syntax(self):
+        result = self._run("sleep 0 &")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("__TB_test_END_0__", result.stdout)
+
+    def test_trailing_comment_does_not_consume_end_marker(self):
+        result = self._run("printf hello # trailing comment")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("hello", result.stdout)
+        self.assertIn("__TB_test_END_0__", result.stdout)
 
 
 class ExtractTests(unittest.TestCase):

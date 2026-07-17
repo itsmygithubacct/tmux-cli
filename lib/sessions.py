@@ -8,6 +8,8 @@ variants sit alongside with clearer return shapes.
 
 from __future__ import annotations
 
+import os
+import secrets
 import subprocess
 import time
 from typing import TypedDict
@@ -305,8 +307,10 @@ def capture_target(target: Target, lines: int = 2000,
     except FileNotFoundError:
         return False, "tmux not found"
     except subprocess.TimeoutExpired:
+        cleanup_buffer()
         return False, "tmux timed out"
     if r.returncode != 0:
+        cleanup_buffer()
         return False, (r.stderr or r.stdout).strip()
     return True, r.stdout
 
@@ -435,10 +439,22 @@ def paste_buffer(target: Target, text: str) -> tuple[bool, str]:
     shell auto-indent / bracketed-paste hooks better than send-keys -l)."""
     if not exists(target.session):
         return False, f"no such session: {target.session}"
-    # ``load-buffer -`` reads text from stdin into an auto-named buffer.
+    # Use a private buffer name so concurrent ``tb paste`` calls cannot race
+    # over tmux's global "most recent buffer" and paste each other's payload.
+    buffer_name = f"tb-{os.getpid()}-{secrets.token_hex(8)}"
+
+    def cleanup_buffer() -> None:
+        try:
+            subprocess.run(
+                ["tmux", "delete-buffer", "-b", buffer_name],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
     try:
         r = subprocess.run(
-            ["tmux", "load-buffer", "-"],
+            ["tmux", "load-buffer", "-b", buffer_name, "-"],
             input=text, capture_output=True, text=True, timeout=10,
         )
     except FileNotFoundError:
@@ -449,14 +465,18 @@ def paste_buffer(target: Target, text: str) -> tuple[bool, str]:
         return False, (r.stderr or r.stdout).strip()
     try:
         r = subprocess.run(
-            ["tmux", "paste-buffer", "-d", "-t", target.as_tmux_target()],
+            ["tmux", "paste-buffer", "-d", "-b", buffer_name,
+             "-t", target.as_tmux_target()],
             capture_output=True, text=True, timeout=10,
         )
     except FileNotFoundError:
+        cleanup_buffer()
         return False, "tmux not found"
     except subprocess.TimeoutExpired:
+        cleanup_buffer()
         return False, "tmux timed out"
     if r.returncode != 0:
+        cleanup_buffer()
         return False, (r.stderr or r.stdout).strip()
     return True, ""
 

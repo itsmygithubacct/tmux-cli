@@ -49,6 +49,36 @@ def _recover_corrupt(path: Path, err: Exception) -> dict:
     return _empty_registry()
 
 
+def _validate_registry(data: object) -> dict:
+    """Validate persisted state before any caller indexes into it."""
+    if not isinstance(data, dict):
+        raise ValueError("registry root must be an object")
+    data.setdefault("assignments", {})
+    data.setdefault("next_port", config.TTYD_PORT_START)
+
+    assignments = data["assignments"]
+    if not isinstance(assignments, dict):
+        raise ValueError("assignments must be an object")
+    used: set[int] = set()
+    for session, port in assignments.items():
+        if not isinstance(session, str) or not session:
+            raise ValueError("assignment names must be non-empty strings")
+        if isinstance(port, bool) or not isinstance(port, int):
+            raise ValueError(f"port for {session!r} must be an integer")
+        if not config.TTYD_PORT_START <= port <= config.TTYD_PORT_END:
+            raise ValueError(f"port for {session!r} is outside the configured range")
+        if port in used:
+            raise ValueError(f"port {port} is assigned more than once")
+        used.add(port)
+
+    next_port = data["next_port"]
+    if isinstance(next_port, bool) or not isinstance(next_port, int):
+        raise ValueError("next_port must be an integer")
+    if not config.TTYD_PORT_START <= next_port <= config.TTYD_PORT_END:
+        raise ValueError("next_port is outside the configured range")
+    return data
+
+
 @contextmanager
 def _locked_registry():
     """Yield (registry_dict, save_fn). File lock held for the whole block."""
@@ -70,15 +100,15 @@ def _locked_registry():
         try:
             f.seek(0)
             raw = f.read().strip()
+            recovered = False
             if raw:
                 try:
-                    data = json.loads(raw)
-                except json.JSONDecodeError as e:
+                    data = _validate_registry(json.loads(raw))
+                except (json.JSONDecodeError, ValueError) as e:
                     data = _recover_corrupt(path, e)
+                    recovered = True
             else:
                 data = _empty_registry()
-            data.setdefault("assignments", {})
-            data.setdefault("next_port", config.TTYD_PORT_START)
 
             def save() -> None:
                 # Serialise *before* truncating: a json error (or any
@@ -94,6 +124,11 @@ def _locked_registry():
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
+
+            # Persist recovery even for read-only calls such as get(); otherwise
+            # every read would rediscover and back up the same corrupt payload.
+            if recovered:
+                save()
 
             yield data, save
         finally:

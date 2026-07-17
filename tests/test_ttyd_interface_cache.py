@@ -1,7 +1,8 @@
 """Interface resolution cache in lib/ttyd.py.
 
 Verifies:
-  - Loopback/wildcard inputs never touch subprocess.
+  - Wildcard inputs never touch subprocess.
+  - Loopback uses the platform's resolved interface name.
   - Concrete addresses cache after the first resolution.
   - The ifconfig fallback parser handles a representative BSD/macOS stanza.
 """
@@ -29,12 +30,17 @@ class ShortCircuitTests(unittest.TestCase):
             self.assertIsNone(ttyd._ttyd_interface(None))
             sp.check_output.assert_not_called()
 
-    def test_loopback_returns_lo_without_subprocess(self):
-        with mock.patch.object(ttyd, "subprocess") as sp:
-            self.assertEqual(ttyd._ttyd_interface("127.0.0.1"), "lo")
-            self.assertEqual(ttyd._ttyd_interface("localhost"), "lo")
-            self.assertEqual(ttyd._ttyd_interface("::1"), "lo")
-            sp.check_output.assert_not_called()
+    def test_loopback_uses_resolved_interface(self):
+        with mock.patch.object(ttyd, "_iface_from_ip_addr", return_value=None), \
+             mock.patch.object(ttyd, "_iface_from_ifconfig", return_value="lo0"):
+            self.assertEqual(ttyd._ttyd_interface("127.0.0.1"), "lo0")
+
+    def test_loopback_falls_back_to_known_interface_names(self):
+        with mock.patch.object(ttyd, "_iface_from_ip_addr", return_value=None), \
+             mock.patch.object(ttyd, "_iface_from_ifconfig", return_value=None), \
+             mock.patch.object(ttyd.socket, "if_nameindex",
+                               return_value=[(1, "lo0"), (2, "en0")]):
+            self.assertEqual(ttyd._ttyd_interface("localhost"), "lo0")
 
 
 class CacheTests(unittest.TestCase):

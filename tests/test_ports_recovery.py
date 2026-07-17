@@ -89,6 +89,36 @@ class CorruptRegistryRecoveryTests(_IsolatedStateMixin, unittest.TestCase):
         backups = list(cfg.PORTS_FILE.parent.glob("ports.json.corrupt.*"))
         self.assertEqual(len(backups), 1, backups)
 
+    def test_valid_json_with_wrong_root_shape_is_recovered(self):
+        cfg.PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cfg.PORTS_FILE.write_text("[]\n")
+
+        self.assertIsNone(ports.get("work"))
+        recovered = json.loads(cfg.PORTS_FILE.read_text())
+        self.assertEqual(recovered, {
+            "assignments": {}, "next_port": cfg.TTYD_PORT_START,
+        })
+        backups = list(cfg.PORTS_FILE.parent.glob("ports.json.corrupt.*"))
+        self.assertEqual(len(backups), 1, backups)
+
+    def test_wrong_nested_schema_is_recovered(self):
+        cfg.PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cfg.PORTS_FILE.write_text(json.dumps({
+            "assignments": [], "next_port": cfg.TTYD_PORT_START,
+        }))
+
+        port = ports.assign("work")
+        self.assertEqual(port, cfg.TTYD_PORT_START)
+
+    def test_duplicate_assignment_ports_are_recovered(self):
+        cfg.PORTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cfg.PORTS_FILE.write_text(json.dumps({
+            "assignments": {"a": 7700, "b": 7700},
+            "next_port": 7701,
+        }))
+
+        self.assertEqual(ports.all_assignments(), {})
+
 
 class PortsFileIsJSONTests(_IsolatedStateMixin, unittest.TestCase):
 

@@ -14,17 +14,20 @@ import subprocess
 import threading
 import time
 import urllib.parse
+import weakref
 from pathlib import Path
 
 from . import config, ports
 
 
-# Per-session spawn locks. Without this, two concurrent start() calls for
-# the same session both pass the read_pid() check and race to Popen ttyd,
-# with the loser hitting EADDRINUSE on bind. The outer lock guards the
-# dict; the per-session lock serializes start() for that specific session.
+# Per-session lifecycle locks. Without this, concurrent start()/stop() calls
+# can both pass the read_pid() check or stop a process while another caller is
+# still spawning it. Weak values keep the registry bounded without deleting a
+# lock that another caller still holds or is waiting to acquire: once the last
+# caller drops its strong reference, the registry entry disappears by itself.
 _start_locks_mutex = threading.Lock()
-_start_locks: dict[str, threading.Lock] = {}
+_start_locks: weakref.WeakValueDictionary[str, threading.Lock] = \
+    weakref.WeakValueDictionary()
 
 # Cache of (bind_addr → interface-name | None). _ttyd_interface is called
 # on every spawn; the underlying `ip addr` / `ifconfig` call is the
@@ -41,21 +44,6 @@ def _start_lock(session: str) -> threading.Lock:
             lock = threading.Lock()
             _start_locks[session] = lock
         return lock
-
-
-def _discard_start_lock(session: str) -> None:
-    """Drop a session's spawn lock once it's stopped.
-
-    Raw shells get a fresh unique name on every launch
-    (``raw-shell-<ms>-<rand>``), so without this the dict would grow one
-    entry per shell ever started — an unbounded leak on a long-lived
-    dashboard. Popping the dict entry only removes the *registration*; a
-    concurrent start() that already holds the lock object keeps its own
-    reference and finishes normally, and the next start() for this name
-    (if any) simply makes a new lock.
-    """
-    with _start_locks_mutex:
-        _start_locks.pop(session, None)
 
 
 def _atomic_write(path: Path, data: str) -> None:
@@ -255,8 +243,7 @@ def _ttyd_interface(bind_addr: str | None) -> str | None:
     raw = (bind_addr or "").strip()
     if not raw or raw in {"0.0.0.0", "::"}:
         return None
-    if raw in {"127.0.0.1", "::1", "localhost"}:
-        return "lo"
+    loopback = raw in {"127.0.0.1", "::1", "localhost"}
 
     with _iface_cache_lock:
         if raw in _iface_cache:
@@ -275,6 +262,19 @@ def _ttyd_interface(bind_addr: str | None) -> str | None:
     resolved = _iface_from_ip_addr(targets)
     if resolved is None:
         resolved = _iface_from_ifconfig(targets)
+    if resolved is None and loopback:
+        # Minimal containers may lack both `ip` and `ifconfig`. Prefer the
+        # platform's actual loopback interface name (Linux commonly `lo`,
+        # BSD/macOS `lo0`) instead of hard-coding a Linux-only value.
+        try:
+            interface_names = {name for _, name in socket.if_nameindex()}
+        except OSError:
+            interface_names = set()
+        resolved = next(
+            (candidate for candidate in ("lo", "lo0")
+             if candidate in interface_names),
+            None,
+        )
 
     with _iface_cache_lock:
         _iface_cache[raw] = resolved
@@ -394,8 +394,9 @@ def is_running(session: str) -> bool:
 
 def _spawn_ttyd(name: str, port: int, argv_tail: list[str],
                 tls_paths: tuple[Path, Path] | None = None,
-                bind_addr: str | None = None) -> dict:
+                bind_addr: str | None = "127.0.0.1") -> dict:
     config.ensure_dirs()
+    bind_addr = (bind_addr or "").strip() or "127.0.0.1"
     probe_host = _probe_host(bind_addr)
 
     if _port_listening_on(port, probe_host):
@@ -420,7 +421,7 @@ def _spawn_ttyd(name: str, port: int, argv_tail: list[str],
     ttyd = config.ttyd_executable()
     argv = [ttyd, "-p", str(port)]
     interface = _ttyd_interface(bind_addr)
-    if bind_addr and not interface and bind_addr.strip() not in {"", "0.0.0.0", "::"}:
+    if not interface and bind_addr not in {"0.0.0.0", "::"}:
         return {
             "ok": False,
             "error": (
@@ -477,7 +478,7 @@ def _spawn_ttyd(name: str, port: int, argv_tail: list[str],
 
 def start(session: str,
           tls_paths: tuple[Path, Path] | None = None,
-          bind_addr: str | None = None) -> dict:
+          bind_addr: str | None = "127.0.0.1") -> dict:
     """Ensure a ttyd instance is running for ``session``. Idempotent.
 
     When ``tls_paths`` is set, ttyd is spawned with ``--ssl --ssl-cert --ssl-key``
@@ -509,7 +510,7 @@ def start(session: str,
 
 
 def start_raw(tls_paths: tuple[Path, Path] | None = None,
-              bind_addr: str | None = None) -> dict:
+              bind_addr: str | None = "127.0.0.1") -> dict:
     """Spawn a one-off raw ttyd shell not attached to tmux.
 
     The name includes 8 hex bytes of randomness so two clicks within the
@@ -520,9 +521,14 @@ def start_raw(tls_paths: tuple[Path, Path] | None = None,
     stopping the ttyd.
     """
     name = f"raw-shell-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
-    port = ports.assign(name)
-    argv_tail = ["-W", "bash", "-lc", 'exec "${SHELL:-bash}" -il']
-    return _spawn_ttyd(name, port, argv_tail, tls_paths=tls_paths, bind_addr=bind_addr)
+    with _start_lock(name):
+        port = ports.assign(name)
+        argv_tail = ["-W", "bash", "-lc", 'exec "${SHELL:-bash}" -il']
+        return _spawn_ttyd(
+            name, port, argv_tail,
+            tls_paths=tls_paths,
+            bind_addr=bind_addr,
+        )
 
 
 def stop(session: str) -> dict:
@@ -531,40 +537,41 @@ def stop(session: str) -> dict:
     # the dashboard show a stale row. Tmux sessions keep their port (the
     # ttyd may be re-spawned later); only raw shells get the release.
     is_raw = session.startswith("raw-shell-")
-    # The session is going away; drop its spawn lock so the registry
-    # doesn't accumulate one entry per (especially raw-shell) launch.
-    _discard_start_lock(session)
-    pid = read_pid(session)
-    if pid is None:
-        _pidfile(session).unlink(missing_ok=True)
-        _schemefile(session).unlink(missing_ok=True)
-        if is_raw:
-            ports.release(session)
-        return {"ok": True, "already_stopped": True}
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError as e:
-        _pidfile(session).unlink(missing_ok=True)
-        _schemefile(session).unlink(missing_ok=True)
-        if is_raw:
-            ports.release(session)
-        return {"ok": False, "error": f"kill failed: {e}"}
-    # Wait briefly; escalate to SIGKILL if needed.
-    deadline = time.time() + 2.0
-    while time.time() < deadline:
-        if not _pid_alive(pid):
-            break
-        time.sleep(0.05)
-    if _pid_alive(pid):
+    # Share the same per-session lock as start(). A stop arriving during a
+    # spawn waits until the pidfile is committed, and a start arriving during
+    # shutdown waits until the old process is gone.
+    with _start_lock(session):
+        pid = read_pid(session)
+        if pid is None:
+            _pidfile(session).unlink(missing_ok=True)
+            _schemefile(session).unlink(missing_ok=True)
+            if is_raw:
+                ports.release(session)
+            return {"ok": True, "already_stopped": True}
         try:
-            os.kill(pid, signal.SIGKILL)
-        except OSError:
-            pass
-    _pidfile(session).unlink(missing_ok=True)
-    _schemefile(session).unlink(missing_ok=True)
-    if is_raw:
-        ports.release(session)
-    return {"ok": True, "pid": pid}
+            os.kill(pid, signal.SIGTERM)
+        except OSError as e:
+            _pidfile(session).unlink(missing_ok=True)
+            _schemefile(session).unlink(missing_ok=True)
+            if is_raw:
+                ports.release(session)
+            return {"ok": False, "error": f"kill failed: {e}"}
+        # Wait briefly; escalate to SIGKILL if needed.
+        deadline = time.time() + 2.0
+        while time.time() < deadline:
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.05)
+        if _pid_alive(pid):
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+        _pidfile(session).unlink(missing_ok=True)
+        _schemefile(session).unlink(missing_ok=True)
+        if is_raw:
+            ports.release(session)
+        return {"ok": True, "pid": pid}
 
 
 def stop_all() -> int:
@@ -604,18 +611,6 @@ def gc_orphans() -> dict:
         if read_pid(name) is not None:
             active.add(name)
     dropped = ports.prune(active)
-
-    # Drop spawn locks for sessions that no longer have a live ttyd, in
-    # case any leaked from a stop() that never ran (hard crash / SIGKILL).
-    # Belt-and-braces with the discard in stop(); bounds the registry even
-    # for sessions that died without going through it. Snapshot the keys
-    # so the read_pid() I/O doesn't run under the mutex.
-    with _start_locks_mutex:
-        lock_names = list(_start_locks)
-    dead_locks = [n for n in lock_names if read_pid(n) is None]
-    with _start_locks_mutex:
-        for name in dead_locks:
-            _start_locks.pop(name, None)
 
     return {"stale_pids_removed": stale_pids, "ports_dropped": len(dropped)}
 

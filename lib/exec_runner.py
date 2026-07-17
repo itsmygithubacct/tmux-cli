@@ -23,12 +23,31 @@ from .errors import Timeout
 from .targeting import Target
 
 
-_SHELL_COMMANDS = {"bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh", "csh"}
+# Sentinel framing uses Bourne-family assignment and ``$?`` syntax. Shells
+# with different grammars (fish/csh/tcsh) must use idle detection instead of
+# receiving a command that can never emit its END marker.
+_SHELL_COMMANDS = {"bash", "zsh", "sh", "dash", "ksh", "ash"}
 
 
 def is_shell_pane(target: Target) -> bool:
     cmd = sessions.pane_current_command(target)
     return (cmd or "").lower() in _SHELL_COMMANDS
+
+
+def _wrap_sentinel(command: str, start: str, tag: str) -> str:
+    """Frame a command without changing valid trailing shell syntax.
+
+    Newlines are intentional: appending ``;`` makes a command ending in ``&``
+    invalid (``&;``), while putting the END marker on the same line lets a
+    trailing shell comment consume it.
+    """
+    rc_var = f"__tb_{tag}_rc"
+    return (
+        f"printf '\\n{start}\\n'\n"
+        f"{command}\n"
+        f"{rc_var}=$?\n"
+        f"printf '\\n__TB_{tag}_END_%d__\\n' \"${rc_var}\""
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -83,11 +102,7 @@ def exec_sentinel(target: Target, command: str,
     end_re = re.compile(
         rf"^__TB_{tag}_END_(\d+)__$", re.MULTILINE,
     )
-    wrapped = (
-        f"printf '\\n{start}\\n'; "
-        f"{command}; "
-        f"__rc=$?; printf '\\n__TB_{tag}_END_%d__\\n' \"$__rc\""
-    )
+    wrapped = _wrap_sentinel(command, start, tag)
 
     if clear:
         # C-u clears from cursor to line-start; C-k from cursor to end.
