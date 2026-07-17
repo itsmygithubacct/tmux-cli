@@ -4,7 +4,8 @@
 sessions from the shell or from a language-model tool-use loop. Tables for
 humans; a stable `--json` envelope and stable, distinct exit codes for machines.
 
-Stdlib-only (`argparse`, `subprocess`, `urllib`, …) — **no pip dependencies**.
+Python 3.10+ and stdlib-only (`argparse`, `subprocess`, `urllib`, …) — **no
+pip dependencies**.
 The only optional external is [`ttyd`](https://github.com/tsl0922/ttyd), used by
 the `tb web` verbs.
 
@@ -53,7 +54,7 @@ loops.
 ## Tests
 
 ```bash
-make test          # python3 -m unittest discover tests
+make ci            # python3 -m unittest discover tests
 ```
 
 ## License
