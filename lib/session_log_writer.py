@@ -58,8 +58,15 @@ def copy_bounded(
     max_bytes: int,
     keep_bytes: int,
 ) -> None:
+    # ``sys.stdin.buffer`` is a BufferedReader over tmux's long-lived pipe.
+    # BufferedReader.read(n) waits for all n bytes (or EOF), which can delay a
+    # normal interactive update indefinitely.  read1() performs at most one
+    # raw read and returns whatever is currently available.  BytesIO and
+    # other simple BinaryIO implementations do not expose read1(), so retain
+    # read() as the test/file fallback.
+    read_chunk = getattr(source, "read1", source.read)
     while True:
-        chunk = source.read(64 * 1024)
+        chunk = read_chunk(64 * 1024)
         if not chunk:
             return
         append_chunk(

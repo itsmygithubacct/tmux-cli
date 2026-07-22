@@ -180,6 +180,23 @@ class RuntimePolicyTests(unittest.TestCase):
             self.assertTrue(ttyd._runtime_matches("work", "127.0.0.1", None))
             self.assertFalse(ttyd._runtime_matches("work", "0.0.0.0", None))
 
+    def test_in_place_tls_rotation_invalidates_runtime_sidecar(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(ttyd.config, "PID_DIR", Path(d)):
+            cert = Path(d) / "cert.pem"
+            key = Path(d) / "key.pem"
+            cert.write_text("certificate-v1")
+            key.write_text("key-v1")
+            tls_paths = (cert, key)
+            ttyd._write_runtime("work", "127.0.0.1", tls_paths)
+            self.assertTrue(
+                ttyd._runtime_matches("work", "127.0.0.1", tls_paths),
+            )
+            cert.write_text("certificate-v2")
+            self.assertFalse(
+                ttyd._runtime_matches("work", "127.0.0.1", tls_paths),
+            )
+
     def test_start_restarts_when_bind_policy_changes(self):
         spawned = {"ok": True, "pid": 456, "port": 7715, "already": False}
         with mock.patch.object(ttyd.config, "ensure_dirs"), \
@@ -208,6 +225,35 @@ class RuntimePolicyTests(unittest.TestCase):
         self.assertTrue(result["already"])
         stop_locked.assert_not_called()
         spawn.assert_not_called()
+
+    def test_reconcile_restarts_live_raw_shell_with_requested_policy(self):
+        with tempfile.TemporaryDirectory() as d:
+            pid_dir = Path(d) / "pids"
+            pid_dir.mkdir()
+            (pid_dir / "raw-shell-1.pid").write_text("123\n")
+            spawned = {
+                "ok": True, "pid": 456, "port": 7715, "already": False,
+            }
+            with mock.patch.object(ttyd.config, "PID_DIR", pid_dir), \
+                 mock.patch.object(ttyd.config, "ensure_dirs"), \
+                 mock.patch.object(
+                     ttyd, "_lifecycle_lock", return_value=nullcontext(),
+                 ), \
+                 mock.patch.object(ttyd, "_read_pid_unlocked", return_value=123), \
+                 mock.patch.object(ttyd, "_runtime_matches", return_value=False), \
+                 mock.patch.object(ttyd.ports, "assign", return_value=7715), \
+                 mock.patch.object(
+                     ttyd, "_stop_locked", return_value={"ok": True, "pid": 123},
+                 ) as stop_locked, \
+                 mock.patch.object(
+                     ttyd, "_spawn_ttyd", return_value=spawned,
+                 ) as spawn:
+                result = ttyd.reconcile_running(bind_addr="127.0.0.1")
+
+        self.assertEqual(result, {"checked": 1, "restarted": 1, "errors": []})
+        stop_locked.assert_called_once_with("raw-shell-1", release_port=False)
+        self.assertEqual(spawn.call_args.args[:2], ("raw-shell-1", 7715))
+        self.assertIn("${SHELL:-bash}", spawn.call_args.args[2][-1])
 
 
 class ReadPidTests(unittest.TestCase):

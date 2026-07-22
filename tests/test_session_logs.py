@@ -1,7 +1,10 @@
 """Session log hashing for content-based idle detection."""
 
+import os
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from io import BytesIO
 from pathlib import Path
@@ -154,6 +157,37 @@ class EnsureLoggingTests(_IsolatedLogDir, unittest.TestCase):
             session_logs.ensure_logging_all()
         self.assertEqual(run.call_count, call_count_after_first)
 
+    def test_prune_removes_only_old_orphan_state(self):
+        session_logs._ensure_dir()
+        active_log = session_logs.log_path("active")
+        old_log = session_logs.log_path("old")
+        fresh_log = session_logs.log_path("fresh")
+        old_marker = session_logs._writer_marker("old")
+        for path in (active_log, old_log, fresh_log, old_marker):
+            path.write_bytes(b"x")
+        old_time = 1000 - session_logs._ORPHAN_GRACE_SEC - 1
+        os.utime(old_log, (old_time, old_time))
+        os.utime(old_marker, (old_time, old_time))
+
+        removed = session_logs.prune(["active"], now=1000)
+
+        self.assertEqual(removed, 2)
+        self.assertTrue(active_log.exists())
+        self.assertTrue(fresh_log.exists())
+        self.assertFalse(old_log.exists())
+        self.assertFalse(old_marker.exists())
+
+    def test_remove_clears_files_and_hash_state(self):
+        session_logs._ensure_dir()
+        session_logs.log_path("work").write_bytes(b"output")
+        session_logs._writer_marker("work").touch()
+        session_logs._hash_state["work"] = ("hash", 1)
+
+        self.assertEqual(session_logs.remove("work"), 2)
+        self.assertFalse(session_logs.log_path("work").exists())
+        self.assertFalse(session_logs._writer_marker("work").exists())
+        self.assertNotIn("work", session_logs._hash_state)
+
 
 class BoundedLogWriterTests(unittest.TestCase):
 
@@ -175,6 +209,37 @@ class BoundedLogWriterTests(unittest.TestCase):
             )
             self.assertLessEqual(path.stat().st_size, 10)
             self.assertEqual(path.read_bytes(), payload[-8:])
+
+    def test_live_pipe_writes_available_bytes_without_waiting_for_eof(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "work.log"
+            read_fd, write_fd = os.pipe()
+            errors: list[BaseException] = []
+
+            def copy_pipe():
+                try:
+                    with os.fdopen(read_fd, "rb") as source:
+                        session_log_writer.copy_bounded(
+                            source, path, max_bytes=1024, keep_bytes=768,
+                        )
+                except BaseException as exc:  # surfaced in the test thread
+                    errors.append(exc)
+
+            thread = threading.Thread(target=copy_pipe)
+            thread.start()
+            try:
+                os.write(write_fd, b"small interactive update\n")
+                deadline = time.monotonic() + 1.0
+                while time.monotonic() < deadline:
+                    if path.exists() and path.stat().st_size:
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(path.read_bytes(), b"small interactive update\n")
+            finally:
+                os.close(write_fd)
+                thread.join(1)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
 
 
 if __name__ == "__main__":

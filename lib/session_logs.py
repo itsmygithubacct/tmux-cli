@@ -39,6 +39,11 @@ except ValueError:
     _LOG_MAX_BYTES = 10 * 1024 * 1024
 _LOG_KEEP_BYTES = min(8 * 1024 * 1024, _LOG_MAX_BYTES)
 
+# Leave a short grace window before pruning an orphan discovered by the
+# periodic sweep.  A session may be created between the tmux snapshot and the
+# filesystem walk; its freshly-written log must not be mistaken for debris.
+_ORPHAN_GRACE_SEC = 60
+
 
 def _safe(name: str) -> str:
     """Reversible, collision-free basename for a session name.
@@ -141,8 +146,10 @@ def ensure_logging_all(force: bool = False) -> None:
     if not force and now - _last_ensure_ts < _ENSURE_THROTTLE_SEC:
         return
     _last_ensure_ts = now
-    for name in _list_sessions():
+    active = _list_sessions()
+    for name in active:
         ensure_logging(name)
+    prune(active)
 
 
 def _read_tail(path: Path, limit: int = _TAIL_BYTES) -> bytes:
@@ -199,3 +206,59 @@ def idle_seconds(session: str, now: int | None = None) -> int | None:
 def forget(session: str) -> None:
     """Drop cached hash state — call on rename/kill to avoid stale entries."""
     _hash_state.pop(session, None)
+
+
+def remove(session: str) -> int:
+    """Remove idle-detection state for a session.
+
+    Session logs are implementation state, not an archive.  Removing both the
+    bounded-writer marker and the log prevents uniquely named short-lived
+    sessions from accumulating one capped file apiece forever.
+    """
+    forget(session)
+    removed = 0
+    for path in (log_path(session), _writer_marker(session)):
+        try:
+            path.unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # Logging cleanup is best-effort; lifecycle operations must still
+            # succeed if the state directory becomes temporarily unwritable.
+            pass
+    return removed
+
+
+def prune(active_sessions: list[str] | set[str], *, now: float | None = None) -> int:
+    """Remove old log/marker files that do not belong to a live session."""
+    if now is None:
+        now = time.time()
+    active_basenames = {_safe(name) for name in active_sessions}
+    removed = 0
+    marker_suffix = ".bounded-writer-v1"
+    try:
+        entries = list(LOG_DIR.iterdir())
+    except OSError:
+        return 0
+    for path in entries:
+        encoded_name: str | None = None
+        if path.name.endswith(".log"):
+            encoded_name = path.name[:-4]
+        elif path.name.startswith(".") and path.name.endswith(marker_suffix):
+            encoded_name = path.name[1:-len(marker_suffix)]
+        if not encoded_name or encoded_name in active_basenames:
+            continue
+        try:
+            if now - path.stat().st_mtime < _ORPHAN_GRACE_SEC:
+                continue
+            path.unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+    for name in list(_hash_state):
+        if _safe(name) not in active_basenames:
+            _hash_state.pop(name, None)
+    return removed

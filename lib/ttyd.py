@@ -7,6 +7,7 @@ A log per session lives at ``$STATE_DIR/logs/<session>.log``.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import secrets
@@ -124,20 +125,41 @@ def _unsafe(name: str) -> str:
 def _runtime_config(
     bind_addr: str | None,
     tls_paths: tuple[Path, Path] | None,
-) -> dict[str, str | None]:
+) -> dict[str, object]:
     """Return the security-relevant configuration for a ttyd process."""
     bind = (bind_addr or "").strip() or "127.0.0.1"
     cert: str | None = None
     key: str | None = None
+    cert_sha256: str | None = None
+    key_sha256: str | None = None
     if tls_paths is not None:
-        cert = str(Path(tls_paths[0]).expanduser().resolve())
-        key = str(Path(tls_paths[1]).expanduser().resolve())
+        cert_path = Path(tls_paths[0]).expanduser().resolve()
+        key_path = Path(tls_paths[1]).expanduser().resolve()
+        cert = str(cert_path)
+        key = str(key_path)
+        cert_sha256 = _file_sha256(cert_path)
+        key_sha256 = _file_sha256(key_path)
     return {
         "bind_addr": bind,
         "scheme": "https" if tls_paths is not None else "http",
         "cert": cert,
         "key": key,
+        # ttyd reads the certificate and key once at process start. Paths
+        # alone cannot detect an in-place certificate rotation.
+        "cert_sha256": cert_sha256,
+        "key_sha256": key_sha256,
     }
+
+
+def _file_sha256(path: Path) -> str | None:
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as source:
+            for chunk in iter(lambda: source.read(64 * 1024), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
 
 
 def _write_runtime(
@@ -586,6 +608,9 @@ def start(session: str,
     requested policy.
     """
     config.ensure_dirs()
+    wrap = str(config.TTYD_WRAP)
+    if not Path(wrap).is_file():
+        return {"ok": False, "error": f"wrapper missing: {wrap}"}
 
     with _lifecycle_lock(session):
         existing_pid = _read_pid_unlocked(session)
@@ -605,9 +630,6 @@ def start(session: str,
                              + stopped.get("error", "stop failed"),
                 }
 
-        wrap = str(config.TTYD_WRAP)
-        if not Path(wrap).is_file():
-            return {"ok": False, "error": f"wrapper missing: {wrap}"}
         result = _spawn_ttyd(
             session,
             port,
@@ -674,10 +696,77 @@ def _stop_locked(session: str, *, release_port: bool) -> dict:
             pass
         except OSError as e:
             return {"ok": False, "error": f"kill failed: {e}"}
+        kill_deadline = time.time() + 1.0
+        while time.time() < kill_deadline and _pid_alive(pid):
+            time.sleep(0.02)
+        if _pid_alive(pid):
+            return {
+                "ok": False,
+                "error": f"ttyd pid {pid} did not exit after SIGKILL",
+            }
     _clear_runtime_state(session)
     if release_port:
         ports.release(session)
     return {"ok": True, "pid": pid}
+
+
+def reconcile_running(
+    *,
+    bind_addr: str | None = "127.0.0.1",
+    tls_paths: tuple[Path, Path] | None = None,
+) -> dict:
+    """Apply the requested bind/TLS policy to every managed live ttyd.
+
+    Dashboard processes may restart while their ttyd children continue
+    running.  Reconcile them before accepting HTTP traffic so changing from a
+    wildcard bind to loopback (or rotating TLS material) takes effect
+    immediately rather than waiting for an operator to relaunch each pane.
+    """
+    config.ensure_dirs()
+    checked = 0
+    restarted = 0
+    errors: list[str] = []
+    pidfiles = sorted(config.PID_DIR.glob("*.pid"), key=lambda p: p.name)
+    for pidfile in pidfiles:
+        name = _unsafe(pidfile.stem)
+        with _lifecycle_lock(name):
+            pid = _read_pid_unlocked(name)
+            if pid is None:
+                continue
+            checked += 1
+            if _runtime_matches(name, bind_addr, tls_paths):
+                continue
+
+            if name.startswith("raw-shell-"):
+                argv_tail = ["-W", "bash", "-lc", 'exec "${SHELL:-bash}" -il']
+            else:
+                wrap = str(config.TTYD_WRAP)
+                if not Path(wrap).is_file():
+                    errors.append(f"{name}: wrapper missing: {wrap}")
+                    continue
+                argv_tail = ["-W", "bash", wrap, name]
+
+            port = ports.assign(name)
+            stopped = _stop_locked(name, release_port=False)
+            if not stopped.get("ok"):
+                errors.append(
+                    f"{name}: {stopped.get('error', 'could not stop old ttyd')}",
+                )
+                continue
+            result = _spawn_ttyd(
+                name,
+                port,
+                argv_tail,
+                tls_paths=tls_paths,
+                bind_addr=bind_addr,
+            )
+            if not result.get("ok"):
+                errors.append(
+                    f"{name}: {result.get('error', 'could not start replacement ttyd')}",
+                )
+                continue
+            restarted += 1
+    return {"checked": checked, "restarted": restarted, "errors": errors}
 
 
 def stop(session: str) -> dict:

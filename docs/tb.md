@@ -451,7 +451,7 @@ With `--json`, returns both the structured data and the rendered text.
 |---|---|
 | `TB_DASHBOARD_HOST` | host used when building URLs in `tb web url/start` (default `localhost`) |
 | `TB_TTYD_BIND` | listener address for `tb web start` (default `127.0.0.1`; `--bind` takes precedence) |
-| `TB_SESSION_LOG_MAX_BYTES` | maximum active pipe-pane log size per session (default 10 MiB; rotations retain up to 8 MiB) |
+| `TB_SESSION_LOG_MAX_BYTES` | maximum active pipe-pane log size per session (default 10 MiB; rotations retain up to 8 MiB; killed/orphaned session logs are reaped) |
 | `TB_COLOR` | `always` / `never` to override TTY detection for colour output |
 | `NO_COLOR` | if set (any value), disables colour |
 

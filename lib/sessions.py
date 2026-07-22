@@ -232,6 +232,11 @@ def kill(session: str) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, "tmux timed out"
     if r.returncode == 0:
+        try:
+            from . import session_logs
+            session_logs.remove(session)
+        except Exception:
+            pass
         return True, ""
     return False, (r.stderr or r.stdout).strip()
 
@@ -285,6 +290,19 @@ def rename(old: str, new_name: str) -> tuple[bool, str]:
     except subprocess.TimeoutExpired:
         return False, "tmux timed out"
     if r.returncode == 0:
+        try:
+            from . import session_logs
+            # A renamed pane keeps its existing pipe command. Replace it with
+            # one targeting the new collision-free path, then discard the old
+            # idle-detection state. Stale state for a previously-used new name
+            # is cleared before the replacement starts.
+            session_logs.remove(new_name)
+            session_logs.ensure_logging(new_name)
+            session_logs.remove(old)
+        except Exception:
+            # Session lifecycle remains authoritative; logging is best-effort
+            # and the dashboard's periodic ensure/prune pass will retry.
+            pass
         return True, ""
     return False, (r.stderr or r.stdout).strip()
 
