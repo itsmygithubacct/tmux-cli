@@ -307,10 +307,8 @@ def capture_target(target: Target, lines: int = 2000,
     except FileNotFoundError:
         return False, "tmux not found"
     except subprocess.TimeoutExpired:
-        cleanup_buffer()
         return False, "tmux timed out"
     if r.returncode != 0:
-        cleanup_buffer()
         return False, (r.stderr or r.stdout).strip()
     return True, r.stdout
 

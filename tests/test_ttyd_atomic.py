@@ -5,13 +5,15 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import nullcontext
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import lib.ttyd as ttyd  # noqa: E402
 from lib.ttyd import (  # noqa: E402
-    _atomic_write, _safe, _start_lock, _unsafe,
+    _atomic_write, _lifecycle_lock, _safe, _start_lock, _unsafe,
 )
 
 
@@ -22,9 +24,8 @@ class AtomicWriteTests(unittest.TestCase):
             target = Path(d) / "sub" / "pid"
             _atomic_write(target, "12345\n")
             self.assertEqual(target.read_text(), "12345\n")
-            # tmp file should not linger
-            tmp = target.with_name(target.name + ".tmp")
-            self.assertFalse(tmp.exists())
+            # Unique temp files should not linger.
+            self.assertEqual(list(target.parent.glob(".pid.*.tmp")), [])
 
     def test_overwrites_existing_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -122,8 +123,6 @@ class StartLockTests(unittest.TestCase):
         self.assertEqual(leftover, [])
 
     def test_stop_waits_for_an_inflight_start_lock(self):
-        from unittest import mock
-
         name = "serialized-stop"
         lock = _start_lock(name)
         lock.acquire()
@@ -139,7 +138,10 @@ class StartLockTests(unittest.TestCase):
             started.set()
             result.append(ttyd.stop(name))
 
-        with mock.patch.object(ttyd, "read_pid", side_effect=read_pid):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(ttyd, "_read_pid_unlocked", side_effect=read_pid), \
+             mock.patch.object(ttyd.config, "STATE_DIR", Path(d)), \
+             mock.patch.object(ttyd.config, "ensure_dirs"):
             thread = threading.Thread(target=run_stop)
             thread.start()
             self.assertTrue(started.wait(1))
@@ -149,6 +151,63 @@ class StartLockTests(unittest.TestCase):
 
         self.assertTrue(read_called.is_set())
         self.assertTrue(result[0]["already_stopped"])
+
+
+class LifecycleFileLockTests(unittest.TestCase):
+
+    def test_lifecycle_lock_takes_and_releases_flock(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(ttyd.config, "STATE_DIR", Path(d)), \
+             mock.patch.object(ttyd.config, "ensure_dirs"), \
+             mock.patch.object(ttyd.fcntl, "flock") as flock:
+            with _lifecycle_lock("work"):
+                pass
+        self.assertEqual(flock.call_args_list[0].args[1], ttyd.fcntl.LOCK_EX)
+        self.assertEqual(flock.call_args_list[-1].args[1], ttyd.fcntl.LOCK_UN)
+
+
+class RuntimePolicyTests(unittest.TestCase):
+
+    def test_missing_runtime_sidecar_does_not_match(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(ttyd.config, "PID_DIR", Path(d)):
+            self.assertFalse(ttyd._runtime_matches("work", "127.0.0.1", None))
+
+    def test_matching_runtime_sidecar_is_accepted(self):
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.object(ttyd.config, "PID_DIR", Path(d)):
+            ttyd._write_runtime("work", "127.0.0.1", None)
+            self.assertTrue(ttyd._runtime_matches("work", "127.0.0.1", None))
+            self.assertFalse(ttyd._runtime_matches("work", "0.0.0.0", None))
+
+    def test_start_restarts_when_bind_policy_changes(self):
+        spawned = {"ok": True, "pid": 456, "port": 7715, "already": False}
+        with mock.patch.object(ttyd.config, "ensure_dirs"), \
+             mock.patch.object(ttyd, "_lifecycle_lock", return_value=nullcontext()), \
+             mock.patch.object(ttyd, "_read_pid_unlocked", return_value=123), \
+             mock.patch.object(ttyd.ports, "assign", return_value=7715), \
+             mock.patch.object(ttyd, "_runtime_matches", return_value=False), \
+             mock.patch.object(
+                 ttyd, "_stop_locked", return_value={"ok": True, "pid": 123},
+             ) as stop_locked, \
+             mock.patch.object(ttyd, "_spawn_ttyd", return_value=spawned) as spawn:
+            result = ttyd.start("work", bind_addr="127.0.0.1")
+        stop_locked.assert_called_once_with("work", release_port=False)
+        spawn.assert_called_once()
+        self.assertTrue(result["restarted"])
+
+    def test_start_keeps_process_when_runtime_policy_matches(self):
+        with mock.patch.object(ttyd.config, "ensure_dirs"), \
+             mock.patch.object(ttyd, "_lifecycle_lock", return_value=nullcontext()), \
+             mock.patch.object(ttyd, "_read_pid_unlocked", return_value=123), \
+             mock.patch.object(ttyd.ports, "assign", return_value=7715), \
+             mock.patch.object(ttyd, "_runtime_matches", return_value=True), \
+             mock.patch.object(ttyd, "_stop_locked") as stop_locked, \
+             mock.patch.object(ttyd, "_spawn_ttyd") as spawn:
+            result = ttyd.start("work", bind_addr="127.0.0.1")
+        self.assertTrue(result["already"])
+        stop_locked.assert_not_called()
+        spawn.assert_not_called()
 
 
 class ReadPidTests(unittest.TestCase):
@@ -163,6 +222,7 @@ class ReadPidTests(unittest.TestCase):
             mock.patch.object(cfg, "STATE_DIR", d),
             mock.patch.object(cfg, "PID_DIR", d / "pids"),
             mock.patch.object(cfg, "LOG_DIR", d / "logs"),
+            mock.patch.object(cfg, "ensure_dirs"),
         ]
         for p in self._patches:
             p.start()

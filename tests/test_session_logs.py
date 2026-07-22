@@ -3,12 +3,13 @@
 import sys
 import tempfile
 import unittest
+from io import BytesIO
 from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lib import session_logs  # noqa: E402
+from lib import session_log_writer, session_logs  # noqa: E402
 
 
 class _IsolatedLogDir:
@@ -124,8 +125,24 @@ class EnsureLoggingTests(_IsolatedLogDir, unittest.TestCase):
         pane_calls = run.call_args_list[1:]
         for call in pane_calls:
             argv = call.args[0]
-            self.assertEqual(argv[:3], ["tmux", "pipe-pane", "-o"])
-            self.assertIn("cat >>", argv[-1])
+            self.assertEqual(argv[:2], ["tmux", "pipe-pane"])
+            self.assertNotIn("-o", argv)
+            self.assertIn("session_log_writer.py", argv[-1])
+            self.assertIn("--max-bytes", argv[-1])
+
+    def test_subsequent_ensure_keeps_an_existing_pipe(self):
+        session_logs._ensure_dir()
+        session_logs._writer_marker("work").touch()
+        with mock.patch("lib.session_logs.subprocess.run") as run:
+            run.side_effect = [
+                mock.Mock(returncode=0, stdout="%0\n"),
+                mock.Mock(returncode=0, stdout=""),
+            ]
+            session_logs.ensure_logging("work")
+        self.assertEqual(
+            run.call_args_list[1].args[0][:3],
+            ["tmux", "pipe-pane", "-o"],
+        )
 
     def test_ensure_logging_all_throttles(self):
         import time as _t
@@ -136,6 +153,28 @@ class EnsureLoggingTests(_IsolatedLogDir, unittest.TestCase):
             # Immediate second call should be throttled (no-op)
             session_logs.ensure_logging_all()
         self.assertEqual(run.call_count, call_count_after_first)
+
+
+class BoundedLogWriterTests(unittest.TestCase):
+
+    def test_rotation_keeps_the_newest_bytes(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "work.log"
+            path.write_bytes(b"01234567")
+            session_log_writer.append_chunk(
+                path, b"89AB", max_bytes=10, keep_bytes=6,
+            )
+            self.assertEqual(path.read_bytes(), b"6789AB")
+
+    def test_stream_never_exceeds_the_ceiling(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "work.log"
+            payload = b"abcdefghijklmnopqrstuvwxyz"
+            session_log_writer.copy_bounded(
+                BytesIO(payload), path, max_bytes=10, keep_bytes=8,
+            )
+            self.assertLessEqual(path.stat().st_size, 10)
+            self.assertEqual(path.read_bytes(), payload[-8:])
 
 
 if __name__ == "__main__":

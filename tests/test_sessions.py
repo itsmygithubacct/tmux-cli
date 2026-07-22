@@ -173,6 +173,28 @@ class TimeoutHandlingTests(unittest.TestCase):
             cmd = sessions.pane_current_command(sessions.Target(session="demo"))
         self.assertIsNone(cmd)
 
+    def test_capture_target_returns_error_on_timeout(self):
+        target = sessions.Target(session="demo")
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch(
+                 "lib.sessions.subprocess.run",
+                 side_effect=subprocess.TimeoutExpired(cmd="tmux", timeout=10),
+             ):
+            ok, err = sessions.capture_target(target)
+        self.assertFalse(ok)
+        self.assertIn("timed out", err)
+
+    def test_capture_target_returns_tmux_error(self):
+        target = sessions.Target(session="demo")
+        failed = subprocess.CompletedProcess(
+            ["tmux", "capture-pane"], 1, "", "bad target",
+        )
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch("lib.sessions.subprocess.run", return_value=failed):
+            ok, err = sessions.capture_target(target)
+        self.assertFalse(ok)
+        self.assertEqual(err, "bad target")
+
 
 if __name__ == "__main__":
     unittest.main()

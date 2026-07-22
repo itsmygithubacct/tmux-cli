@@ -6,16 +6,21 @@ A log per session lives at ``$STATE_DIR/logs/<session>.log``.
 
 from __future__ import annotations
 
+import fcntl
+import json
 import os
 import secrets
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.parse
 import weakref
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from . import config, ports
 
@@ -46,14 +51,43 @@ def _start_lock(session: str) -> threading.Lock:
         return lock
 
 
+@contextmanager
+def _lifecycle_lock(session: str) -> Iterator[None]:
+    """Serialize ttyd lifecycle changes across threads and processes.
+
+    The in-memory lock preserves per-session thread semantics while the
+    filesystem lock covers independent ``tb`` and dashboard processes.  A
+    single process-wide lock file keeps the on-disk lock set bounded and also
+    protects shared port assignments from overlapping lifecycle operations.
+    """
+    with _start_lock(session):
+        config.ensure_dirs()
+        lock_path = config.STATE_DIR / "ttyd-lifecycle.lock"
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _atomic_write(path: Path, data: str) -> None:
     """Write ``data`` to ``path`` via tempfile+rename so readers never see a
     half-written file. write_text() truncates and writes — a concurrent
     read can catch zero bytes between truncate and write."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(data)
-    os.replace(tmp, path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.", suffix=".tmp", dir=path.parent,
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _pidfile(session: str) -> Path:
@@ -62,6 +96,10 @@ def _pidfile(session: str) -> Path:
 
 def _schemefile(session: str) -> Path:
     return config.PID_DIR / f"{_safe(session)}.scheme"
+
+
+def _runtimefile(session: str) -> Path:
+    return config.PID_DIR / f"{_safe(session)}.runtime.json"
 
 
 def _logfile(session: str) -> Path:
@@ -81,6 +119,57 @@ def _safe(name: str) -> str:
 def _unsafe(name: str) -> str:
     """Decode a pid/log basename back to the original session name."""
     return urllib.parse.unquote(name)
+
+
+def _runtime_config(
+    bind_addr: str | None,
+    tls_paths: tuple[Path, Path] | None,
+) -> dict[str, str | None]:
+    """Return the security-relevant configuration for a ttyd process."""
+    bind = (bind_addr or "").strip() or "127.0.0.1"
+    cert: str | None = None
+    key: str | None = None
+    if tls_paths is not None:
+        cert = str(Path(tls_paths[0]).expanduser().resolve())
+        key = str(Path(tls_paths[1]).expanduser().resolve())
+    return {
+        "bind_addr": bind,
+        "scheme": "https" if tls_paths is not None else "http",
+        "cert": cert,
+        "key": key,
+    }
+
+
+def _write_runtime(
+    session: str,
+    bind_addr: str | None,
+    tls_paths: tuple[Path, Path] | None,
+) -> None:
+    _atomic_write(
+        _runtimefile(session),
+        json.dumps(_runtime_config(bind_addr, tls_paths), sort_keys=True) + "\n",
+    )
+
+
+def _runtime_matches(
+    session: str,
+    bind_addr: str | None,
+    tls_paths: tuple[Path, Path] | None,
+) -> bool:
+    try:
+        current = json.loads(_runtimefile(session).read_text())
+    except (OSError, ValueError, TypeError):
+        # Processes created by older versions have no runtime sidecar.  They
+        # must be restarted once so a changed bind/TLS policy cannot be
+        # silently ignored.
+        return False
+    return current == _runtime_config(bind_addr, tls_paths)
+
+
+def _clear_runtime_state(session: str) -> None:
+    _pidfile(session).unlink(missing_ok=True)
+    _schemefile(session).unlink(missing_ok=True)
+    _runtimefile(session).unlink(missing_ok=True)
 
 
 def _pid_is_ttyd(pid: int) -> bool:
@@ -353,7 +442,7 @@ def _reconcile_pidfile(session: str) -> int | None:
     return pid
 
 
-def read_pid(session: str) -> int | None:
+def _read_pid_unlocked(session: str) -> int | None:
     pf = _pidfile(session)
     if not pf.is_file():
         return _reconcile_pidfile(session)
@@ -362,10 +451,15 @@ def read_pid(session: str) -> int | None:
     except (ValueError, OSError):
         return None
     if not _pid_alive(pid):
-        pf.unlink(missing_ok=True)
-        _schemefile(session).unlink(missing_ok=True)
+        _clear_runtime_state(session)
         return None
     return pid
+
+
+def read_pid(session: str) -> int | None:
+    """Return a live ttyd PID while safely reconciling stale state."""
+    with _lifecycle_lock(session):
+        return _read_pid_unlocked(session)
 
 
 def read_scheme(session: str) -> str:
@@ -459,6 +553,7 @@ def _spawn_ttyd(name: str, port: int, argv_tail: list[str],
     scheme = "https" if tls_paths is not None else "http"
     _atomic_write(_pidfile(name), f"{proc.pid}\n")
     _atomic_write(_schemefile(name), f"{scheme}\n")
+    _write_runtime(name, bind_addr, tls_paths)
 
     # Give ttyd a moment to bind, then verify.
     deadline = time.time() + 2.0
@@ -485,28 +580,44 @@ def start(session: str,
     so the dashboard (which is also serving HTTPS) can embed it without
     tripping browser mixed-content blocking on the iframe's ``ws://``.
 
-    Thread-safe for the same session: concurrent callers for the same
-    name serialize on a per-session lock, so only one actually spawns ttyd.
+    Concurrent callers in the dashboard or separate CLI processes serialize
+    on the lifecycle lock, so only one actually spawns ttyd.  A live process
+    is restarted when its persisted bind/TLS configuration differs from the
+    requested policy.
     """
     config.ensure_dirs()
 
-    with _start_lock(session):
-        existing_pid = read_pid(session)
+    with _lifecycle_lock(session):
+        existing_pid = _read_pid_unlocked(session)
         port = ports.assign(session)
-        if existing_pid is not None:
+        if existing_pid is not None and _runtime_matches(
+            session, bind_addr, tls_paths,
+        ):
             return {"ok": True, "pid": existing_pid, "port": port, "already": True,
                     "scheme": read_scheme(session)}
+        restarted = existing_pid is not None
+        if restarted:
+            stopped = _stop_locked(session, release_port=False)
+            if not stopped.get("ok"):
+                return {
+                    "ok": False,
+                    "error": "cannot restart ttyd with updated bind/TLS policy: "
+                             + stopped.get("error", "stop failed"),
+                }
 
         wrap = str(config.TTYD_WRAP)
         if not Path(wrap).is_file():
             return {"ok": False, "error": f"wrapper missing: {wrap}"}
-        return _spawn_ttyd(
+        result = _spawn_ttyd(
             session,
             port,
             ["-W", "bash", wrap, session],
             tls_paths=tls_paths,
             bind_addr=bind_addr,
         )
+        if restarted and result.get("ok"):
+            result["restarted"] = True
+        return result
 
 
 def start_raw(tls_paths: tuple[Path, Path] | None = None,
@@ -521,7 +632,7 @@ def start_raw(tls_paths: tuple[Path, Path] | None = None,
     stopping the ttyd.
     """
     name = f"raw-shell-{int(time.time() * 1000)}-{secrets.token_hex(4)}"
-    with _start_lock(name):
+    with _lifecycle_lock(name):
         port = ports.assign(name)
         argv_tail = ["-W", "bash", "-lc", 'exec "${SHELL:-bash}" -il']
         return _spawn_ttyd(
@@ -529,6 +640,44 @@ def start_raw(tls_paths: tuple[Path, Path] | None = None,
             tls_paths=tls_paths,
             bind_addr=bind_addr,
         )
+
+
+def _stop_locked(session: str, *, release_port: bool) -> dict:
+    """Stop ``session`` while the caller holds ``_lifecycle_lock``."""
+    pid = _read_pid_unlocked(session)
+    if pid is None:
+        _clear_runtime_state(session)
+        if release_port:
+            ports.release(session)
+        return {"ok": True, "already_stopped": True}
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        _clear_runtime_state(session)
+        if release_port:
+            ports.release(session)
+        return {"ok": True, "pid": pid}
+    except OSError as e:
+        # Preserve state when signalling fails (for example EPERM), otherwise
+        # a still-live ttyd would become untracked and impossible to reconcile.
+        return {"ok": False, "error": f"kill failed: {e}"}
+
+    deadline = time.time() + 2.0
+    while time.time() < deadline:
+        if not _pid_alive(pid):
+            break
+        time.sleep(0.05)
+    if _pid_alive(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError as e:
+            return {"ok": False, "error": f"kill failed: {e}"}
+    _clear_runtime_state(session)
+    if release_port:
+        ports.release(session)
+    return {"ok": True, "pid": pid}
 
 
 def stop(session: str) -> dict:
@@ -540,38 +689,8 @@ def stop(session: str) -> dict:
     # Share the same per-session lock as start(). A stop arriving during a
     # spawn waits until the pidfile is committed, and a start arriving during
     # shutdown waits until the old process is gone.
-    with _start_lock(session):
-        pid = read_pid(session)
-        if pid is None:
-            _pidfile(session).unlink(missing_ok=True)
-            _schemefile(session).unlink(missing_ok=True)
-            if is_raw:
-                ports.release(session)
-            return {"ok": True, "already_stopped": True}
-        try:
-            os.kill(pid, signal.SIGTERM)
-        except OSError as e:
-            _pidfile(session).unlink(missing_ok=True)
-            _schemefile(session).unlink(missing_ok=True)
-            if is_raw:
-                ports.release(session)
-            return {"ok": False, "error": f"kill failed: {e}"}
-        # Wait briefly; escalate to SIGKILL if needed.
-        deadline = time.time() + 2.0
-        while time.time() < deadline:
-            if not _pid_alive(pid):
-                break
-            time.sleep(0.05)
-        if _pid_alive(pid):
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except OSError:
-                pass
-        _pidfile(session).unlink(missing_ok=True)
-        _schemefile(session).unlink(missing_ok=True)
-        if is_raw:
-            ports.release(session)
-        return {"ok": True, "pid": pid}
+    with _lifecycle_lock(session):
+        return _stop_locked(session, release_port=is_raw)
 
 
 def stop_all() -> int:

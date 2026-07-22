@@ -15,8 +15,10 @@ repeatedly is safe and cheap.
 from __future__ import annotations
 
 import hashlib
+import os
 import shlex
 import subprocess
+import sys
 import time
 import urllib.parse
 from pathlib import Path
@@ -25,6 +27,17 @@ from . import config
 
 
 LOG_DIR = config.STATE_DIR / "session-logs"
+
+# Rotate active session logs down to 8 MiB once they cross 10 MiB.  Operators
+# can tune the ceiling for unusually chatty workloads without changing code.
+try:
+    _LOG_MAX_BYTES = max(
+        1,
+        int(os.environ.get("TB_SESSION_LOG_MAX_BYTES", 10 * 1024 * 1024)),
+    )
+except ValueError:
+    _LOG_MAX_BYTES = 10 * 1024 * 1024
+_LOG_KEEP_BYTES = min(8 * 1024 * 1024, _LOG_MAX_BYTES)
 
 
 def _safe(name: str) -> str:
@@ -58,6 +71,10 @@ def log_path(session: str) -> Path:
     return LOG_DIR / f"{_safe(session)}.log"
 
 
+def _writer_marker(session: str) -> Path:
+    return LOG_DIR / f".{_safe(session)}.bounded-writer-v1"
+
+
 def _ensure_dir() -> None:
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -84,15 +101,32 @@ def ensure_logging(session: str) -> None:
     """Enable pipe-pane logging for every pane in ``session``. Idempotent."""
     _ensure_dir()
     path = log_path(session)
-    quoted = shlex.quote(str(path))
-    for pane_id in _list_panes(session):
-        # -o: only open a new pipe if no pipe currently exists. This is what
-        # makes repeated calls safe; tmux will skip panes that are already
-        # being piped.
-        subprocess.run(
-            ["tmux", "pipe-pane", "-o", "-t", pane_id, f"cat >> {quoted}"],
+    marker = _writer_marker(session)
+    migrate_existing_pipe = not marker.exists()
+    writer = Path(__file__).with_name("session_log_writer.py")
+    command = shlex.join([
+        sys.executable,
+        str(writer),
+        str(path),
+        "--max-bytes",
+        str(_LOG_MAX_BYTES),
+        "--keep-bytes",
+        str(_LOG_KEEP_BYTES),
+    ])
+    pane_ids = _list_panes(session)
+    migrated = bool(pane_ids)
+    for pane_id in pane_ids:
+        # The first run after this upgrade intentionally replaces a legacy
+        # ``cat >>`` pipe so already-running sessions gain the size bound.
+        # Later calls use -o and only configure panes without an active pipe.
+        options = [] if migrate_existing_pipe else ["-o"]
+        result = subprocess.run(
+            ["tmux", "pipe-pane", *options, "-t", pane_id, command],
             capture_output=True, text=True, timeout=5,
         )
+        migrated = migrated and result.returncode == 0
+    if migrate_existing_pipe and migrated:
+        marker.touch(mode=0o600)
 
 
 def ensure_logging_all(force: bool = False) -> None:
