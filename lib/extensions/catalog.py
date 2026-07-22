@@ -79,7 +79,7 @@ KNOWN: dict[str, CatalogEntry] = {
             "Config card."
         ),
         "repo": "https://github.com/itsmygithubacct/tmux-browse-federation.git",
-        "pinned_ref": "v0.7.6.1-federation",
+        "pinned_ref": "v0.7.6.2-federation",
         "submodule_path": "extensions/federation",
     },
 }
