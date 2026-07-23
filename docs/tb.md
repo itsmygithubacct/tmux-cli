@@ -343,7 +343,9 @@ Renames a session.
 
 #### `tb attach <target>`
 
-`exec()`s into `tmux attach-session`. Only useful from an interactive TTY.
+Selects the requested window/pane, then `exec()`s into `tmux attach-session`.
+Only useful from an interactive TTY. Detaching returns to the process that
+launched `tb`.
 
 ### Observe
 

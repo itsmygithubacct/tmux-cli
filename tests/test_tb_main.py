@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import tb  # noqa: E402
 from lib import sessions  # noqa: E402
-from lib.errors import SessionNotFound, UsageError  # noqa: E402
+from lib.errors import SessionNotFound, TmuxFailed, UsageError  # noqa: E402
 from lib.tb_cmds import bulk, lifecycle, read, web  # noqa: E402
 
 
@@ -277,6 +277,38 @@ class AVerbTests(unittest.TestCase):
         with mock.patch.object(sys.stdout, "isatty", return_value=False):
             with self.assertRaises(UsageError):
                 lifecycle.cmd_a(self._args())
+
+
+class AttachVerbTests(unittest.TestCase):
+    def test_exact_pane_is_selected_before_session_attach(self):
+        target = sessions.Target(session="work", window="2", pane="1")
+        args = types.SimpleNamespace(target="work:2.1")
+        with mock.patch.object(sys.stdout, "isatty", return_value=True), \
+             mock.patch.object(lifecycle, "require_target",
+                               return_value=target), \
+             mock.patch.object(lifecycle.sessions, "select_target",
+                               return_value=(True, "")) as select_target, \
+             mock.patch.object(lifecycle.os, "execvp") as execvp:
+            lifecycle.cmd_attach(args)
+
+        select_target.assert_called_once_with(target)
+        execvp.assert_called_once_with(
+            "tmux",
+            ["tmux", "attach-session", "-t", "=work"],
+        )
+
+    def test_selection_failure_prevents_attach(self):
+        target = sessions.Target(session="work", window="9", pane="9")
+        args = types.SimpleNamespace(target="work:9.9")
+        with mock.patch.object(sys.stdout, "isatty", return_value=True), \
+             mock.patch.object(lifecycle, "require_target",
+                               return_value=target), \
+             mock.patch.object(lifecycle.sessions, "select_target",
+                               return_value=(False, "can't find pane")), \
+             mock.patch.object(lifecycle.os, "execvp") as execvp:
+            with self.assertRaisesRegex(TmuxFailed, "can't find pane"):
+                lifecycle.cmd_attach(args)
+        execvp.assert_not_called()
 
 
 class ErrorHandlingTests(_StubMixin, unittest.TestCase):

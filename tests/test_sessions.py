@@ -147,6 +147,53 @@ class PasteBufferTests(unittest.TestCase):
         )
 
 
+class SelectTargetTests(unittest.TestCase):
+
+    def test_session_only_needs_no_selection_command(self):
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch.object(sessions.subprocess, "run") as run:
+            self.assertEqual(
+                sessions.select_target(sessions.Target(session="work")),
+                (True, ""),
+            )
+        run.assert_not_called()
+
+    def test_window_selection_uses_exact_target(self):
+        result = subprocess.CompletedProcess(["tmux"], 0, "", "")
+        target = sessions.Target(session="work", window="2")
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch.object(sessions.subprocess, "run",
+                               return_value=result) as run:
+            self.assertEqual(sessions.select_target(target), (True, ""))
+        self.assertEqual(
+            run.call_args.args[0],
+            ["tmux", "select-window", "-t", "=work:2"],
+        )
+
+    def test_pane_selection_uses_exact_target(self):
+        result = subprocess.CompletedProcess(["tmux"], 0, "", "")
+        target = sessions.Target(session="work", window="2", pane="1")
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch.object(sessions.subprocess, "run",
+                               return_value=result) as run:
+            self.assertEqual(sessions.select_target(target), (True, ""))
+        self.assertEqual(
+            run.call_args.args[0],
+            ["tmux", "select-pane", "-t", "=work:2.1"],
+        )
+
+    def test_invalid_pane_error_is_returned(self):
+        result = subprocess.CompletedProcess(
+            ["tmux"], 1, "", "can't find pane: 9")
+        target = sessions.Target(session="work", window="9", pane="9")
+        with mock.patch.object(sessions, "exists", return_value=True), \
+             mock.patch.object(sessions.subprocess, "run",
+                               return_value=result):
+            ok, error = sessions.select_target(target)
+        self.assertFalse(ok)
+        self.assertIn("can't find pane", error)
+
+
 class TimeoutHandlingTests(unittest.TestCase):
 
     def test_exists_returns_false_on_timeout(self):

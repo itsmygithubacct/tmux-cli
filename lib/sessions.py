@@ -307,6 +307,38 @@ def rename(old: str, new_name: str) -> tuple[bool, str]:
     return False, (r.stderr or r.stdout).strip()
 
 
+def select_target(target: Target) -> tuple[bool, str]:
+    """Select a target window/pane before an interactive attach.
+
+    ``tmux attach-session -t`` accepts a target *session*, so passing a
+    ``session:window.pane`` expression directly does not provide a portable
+    exact-pane attach. Keep attach itself session-scoped and select the
+    requested window or pane first.
+    """
+    if not exists(target.session):
+        return False, f"no such session: {target.session}"
+    if target.window is None:
+        return True, ""
+    if target.pane is None:
+        argv = ["tmux", "select-window", "-t", target.as_tmux_target()]
+    else:
+        argv = ["tmux", "select-pane", "-t", target.as_tmux_target()]
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "tmux not found"
+    except subprocess.TimeoutExpired:
+        return False, "tmux timed out"
+    if result.returncode == 0:
+        return True, ""
+    return False, (result.stderr or result.stdout).strip()
+
+
 # -----------------------------------------------------------------------------
 # Capture / read
 # -----------------------------------------------------------------------------

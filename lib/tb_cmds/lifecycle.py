@@ -236,6 +236,9 @@ def cmd_attach(args: argparse.Namespace) -> int:
     t = require_target(args.target)
     if not sys.stdout.isatty():
         raise UsageError("attach requires an interactive TTY")
+    ok, err = sessions.select_target(t)
+    if not ok:
+        raise TmuxFailed(err)
     os.execvp("tmux", ["tmux", "attach-session", "-t", f"={t.session}"])
     return 0  # unreachable
 
