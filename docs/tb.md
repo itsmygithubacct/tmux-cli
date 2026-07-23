@@ -414,11 +414,12 @@ the full surface.
 
 ### Bulk (for LLM context)
 
-#### `tb snapshot [--human]`
+#### `tb snapshot [--human] [--tmux-only] [--capture TARGET --lines N]`
 
 One call, all the state: sessions, per-pane info, ttyd assignments, port
 range, dashboard status, tmux server state. Default output is JSON so an
-agent can consume it in one go.
+agent can consume it in one go. Pane rows include both the human target
+indices (`window`, `pane`) and tmux's stable `pane_id`.
 
 ```json
 {"ok": true, "data": {
@@ -433,6 +434,18 @@ agent can consume it in one go.
 ```
 
 `--human` prints a four-line summary instead.
+
+Polling UIs can use `--tmux-only` to omit dashboard, ttyd, port-registry, and
+socket probes. Adding `--capture SESSION:WINDOW.PANE` folds one pane preview
+into that same response instead of starting a second `tb` process:
+
+```sh
+tb --json snapshot --tmux-only --capture work:0.0 --lines 80
+```
+
+The optional `data.capture` object contains `target`, `lines`, `content`, and
+`error`. A disappearing pane is reported in `capture.error` without discarding
+the otherwise valid session snapshot.
 
 #### `tb describe <target>`
 

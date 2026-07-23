@@ -104,6 +104,29 @@ class ListSessionsDedupTests(unittest.TestCase):
         self.assertEqual(out[0]["activity"], 2500)
 
 
+class ListPanesTests(unittest.TestCase):
+
+    def test_includes_stable_pane_id_alongside_human_target_indices(self):
+        row = (
+            "work\t2\tlogs\t1\t%9\tpython\t1234\t/tmp/work"
+            "\t120\t40\t1\n"
+        )
+        completed = subprocess.CompletedProcess(
+            ["tmux", "list-panes"], 0, row, "",
+        )
+        with mock.patch(
+            "lib.sessions.subprocess.run", return_value=completed,
+        ) as run:
+            panes = sessions.list_panes()
+
+        self.assertEqual(len(panes), 1)
+        self.assertEqual(panes[0]["pane_id"], "%9")
+        self.assertEqual(panes[0]["window"], "2")
+        self.assertEqual(panes[0]["pane"], "1")
+        self.assertTrue(panes[0]["active"])
+        self.assertIn("#{pane_id}", run.call_args.args[0][-1])
+
+
 class PasteBufferTests(unittest.TestCase):
 
     def test_each_paste_uses_a_distinct_named_buffer(self):

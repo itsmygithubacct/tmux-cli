@@ -39,6 +39,7 @@ tb wait work --idle 3             # block until the pane goes quiet
 tb capture work -n 200            # read the scrollback
 tb exec work --json -- pytest -q  # run a command, get {ok, exit_status, output}
 tb ls --json                      # machine-readable session list
+tb snapshot --tmux-only --capture work:0.0  # state + preview for polling UIs
 ```
 
 `tb --help` lists every verb. Full reference: **[docs/tb.md](docs/tb.md)**.

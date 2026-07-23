@@ -35,6 +35,7 @@ class PaneInfo(TypedDict, total=False):
     window: str     # window index
     window_name: str
     pane: str       # pane index
+    pane_id: str    # stable tmux pane id (for example, "%3")
     command: str    # #{pane_current_command}
     pid: int
     cwd: str
@@ -49,7 +50,7 @@ _SESSION_FORMAT = (
 )
 _PANE_FORMAT = (
     "#{session_name}\t#{window_index}\t#{window_name}\t#{pane_index}"
-    "\t#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}"
+    "\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}"
     "\t#{pane_width}\t#{pane_height}\t#{?pane_active,1,0}"
 )
 
@@ -175,14 +176,15 @@ def list_panes() -> list[PaneInfo]:
     out: list[PaneInfo] = []
     for line in r.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) != 10:
+        if len(parts) != 11:
             continue
-        sess, wi, wn, pi, cmd, pid, cwd, w, h, active = parts
+        sess, wi, wn, pi, pane_id, cmd, pid, cwd, w, h, active = parts
         out.append({
             "session": sess,
             "window": wi,
             "window_name": wn,
             "pane": pi,
+            "pane_id": pane_id,
             "command": cmd,
             "pid": int(pid),
             "cwd": cwd,
@@ -345,9 +347,13 @@ def select_target(target: Target) -> tuple[bool, str]:
 
 def capture_target(target: Target, lines: int = 2000,
                    ansi: bool = False) -> tuple[bool, str]:
-    """Single canonical capture. Accepts a Target; works for any pane."""
-    if not exists(target.session):
-        return False, f"no such session: {target.session}"
+    """Single canonical capture. Accepts a Target; works for any pane.
+
+    The exact-target ``capture-pane`` call is itself a complete existence
+    check. Avoiding a preceding ``has-session`` halves the subprocess traffic
+    for polling and tailing clients while retaining tmux's precise error when
+    a session or pane disappears between snapshots.
+    """
     cmd = ["tmux", "capture-pane", "-t", target.as_tmux_target(),
            "-p", "-J", "-S", f"-{lines}"]
     if ansi:
