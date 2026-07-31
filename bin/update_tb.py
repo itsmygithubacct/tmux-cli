@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Standalone puller for the ``tb`` CLI — fetches tb.py (and the lib/
-package it needs) from a tmux-cli GitHub release, no git required.
+"""Standalone puller for the ``tb`` CLI.
 
-This script depends on nothing but the Python standard library, so you can
-copy it anywhere — or curl it straight down — and use it to drop a working
-``tb`` into a directory that isn't a git clone:
+Fetches ``tb.py``, the ``lib/`` package it needs, and the permanent-logging
+manual from a tmux-cli GitHub release. This script depends on nothing but the
+Python standard library, so you can copy it anywhere—or curl it straight
+down—and use it to drop a working ``tb`` into a directory that is not a git
+clone:
 
     curl -fsSL https://raw.githubusercontent.com/itsmygithubacct/tmux-cli/main/bin/update_tb.py -o update_tb.py
     python3 update_tb.py --dir ~/bin/tmux-cli
@@ -12,6 +13,7 @@ copy it anywhere — or curl it straight down — and use it to drop a working
 ``tb.py`` imports the ``lib`` package, so by default this pulls both
 ``tb.py`` and ``lib/`` (a runnable CLI). Pass ``--file-only`` if you only
 want the single ``tb.py`` file (e.g. you already have a matching ``lib/``).
+The manual is still copied to ``~/.gpu_terminal/tmux-cli/logging.md``.
 
 Usage:
     python3 update_tb.py                 # pull latest release into the cwd
@@ -28,6 +30,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
+import os
 import re
 import shutil
 import sys
@@ -38,6 +41,7 @@ import urllib.request
 from pathlib import Path, PurePosixPath
 
 DEFAULT_REPO = "itsmygithubacct/tmux-cli"
+DEFAULT_DATA_DIR = "~/.gpu_terminal/tmux-cli"
 _UA = {"User-Agent": "tmux-cli-update_tb"}
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE)
 
@@ -242,10 +246,50 @@ def _install_staged(staged_tb: Path, staged_lib: Path | None,
         raise
 
 
+def _install_manual(text: str, data_dir: Path) -> Path:
+    """Atomically install the owner-only permanent-logging manual."""
+    data_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if data_dir.is_symlink() or not data_dir.is_dir():
+        raise OSError(f"refusing non-directory data path: {data_dir}")
+    data_dir.chmod(0o700)
+    target = data_dir / "logging.md"
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=".logging.md.", suffix=".tmp", dir=data_dir,
+    )
+    tmp = Path(raw_tmp)
+    try:
+        os_write = text.encode("utf-8")
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(os_write)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, target)
+        directory_fd = os.open(
+            data_dir,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return target
+    except BaseException:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
         prog="update_tb.py",
-        description="Pull tb.py (+ lib/) from a tmux-browse GitHub release.",
+        description="Pull tb.py (+ lib/) from a tmux-cli GitHub release.",
     )
     p.add_argument("--dir", default=".",
                    help="destination directory (default: current directory)")
@@ -255,11 +299,23 @@ def main(argv: list[str] | None = None) -> int:
                    help=f"owner/name (default: {DEFAULT_REPO})")
     p.add_argument("--file-only", action="store_true",
                    help="pull only tb.py, not the lib/ package")
+    p.add_argument(
+        "--data-dir",
+        default=DEFAULT_DATA_DIR,
+        help=(
+            "permanent-log data/manual directory "
+            f"(default: {DEFAULT_DATA_DIR})"
+        ),
+    )
     p.add_argument("--check", action="store_true",
                    help="report local vs available version; write nothing")
     args = p.parse_args(argv)
 
     dest = Path(args.dir).expanduser().resolve()
+    raw_data_dir = Path(args.data_dir).expanduser()
+    data_dir = Path(os.path.abspath(os.fspath(raw_data_dir)))
+    if data_dir.is_symlink():
+        return _die(f"refusing symlink data path: {data_dir}")
 
     try:
         ref = args.ref or _latest_tag(args.repo)
@@ -290,6 +346,7 @@ def main(argv: list[str] | None = None) -> int:
             return _die(f"tb.py not found in {args.repo}@{ref}")
         pulled_ver = _version_of(
             _extract_member_text(tf, root, "lib/version.py") or "")
+        manual_text = _extract_member_text(tf, root, "docs/logging.md")
         _say(f"available: {pulled_ver or '?'}")
 
         if args.check:
@@ -326,6 +383,14 @@ def main(argv: list[str] | None = None) -> int:
         wrote = ["tb.py"]
         if not args.file_only:
             wrote.append("lib/")
+        if manual_text is not None:
+            try:
+                manual_path = _install_manual(manual_text, data_dir)
+            except OSError as e:
+                return _die(f"code updated but logging manual install failed: {e}")
+            wrote.append(str(manual_path))
+        else:
+            _say(f"docs/logging.md is not present in {args.repo}@{ref}")
 
     _say(f"wrote {', '.join(wrote)} ({pulled_ver or ref}) to {dest}")
     return 0

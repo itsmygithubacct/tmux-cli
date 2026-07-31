@@ -236,7 +236,10 @@ def kill(session: str) -> tuple[bool, str]:
     if r.returncode == 0:
         try:
             from . import session_logs
-            session_logs.remove(session)
+            # Closing tmux sends EOF to every per-pane writer, which finalizes
+            # its zstd archive. Only the disposable idle tail and wiring marker
+            # are removed here; permanent capture data is never reaped.
+            session_logs.discard_runtime(session)
         except Exception:
             pass
         return True, ""
@@ -295,15 +298,14 @@ def rename(old: str, new_name: str) -> tuple[bool, str]:
         try:
             from . import session_logs
             # A renamed pane keeps its existing pipe command. Replace it with
-            # one targeting the new collision-free path, then discard the old
-            # idle-detection state. Stale state for a previously-used new name
-            # is cleared before the replacement starts.
-            session_logs.remove(new_name)
+            # a new per-pane capture. Replacement closes and finalizes the old
+            # writer, creating an explicit history boundary at the rename.
+            session_logs.discard_runtime(new_name)
             session_logs.ensure_logging(new_name)
-            session_logs.remove(old)
+            session_logs.discard_runtime(old)
         except Exception:
-            # Session lifecycle remains authoritative; logging is best-effort
-            # and the dashboard's periodic ensure/prune pass will retry.
+            # Session lifecycle remains authoritative; the dashboard's
+            # periodic ensure/recovery pass will retry logging setup.
             pass
         return True, ""
     return False, (r.stderr or r.stdout).strip()

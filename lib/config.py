@@ -37,6 +37,19 @@ PID_DIR = STATE_DIR / "pids"
 LOG_DIR = STATE_DIR / "logs"
 TTYD_BIN = Path.home() / ".local" / "bin" / "ttyd"
 
+# Durable tmux pane transcripts deliberately live outside ``.tmux-browse``.
+# tmux-browse's state can be reaped or replaced independently; completed
+# tmux-cli transcripts are user data and are never removed automatically.
+TMUX_CLI_HOME = Path.home() / ".gpu_terminal" / "tmux-cli"
+SESSION_LOG_ROOT = TMUX_CLI_HOME / "logs"
+SESSION_LOG_LIVE_DIR = SESSION_LOG_ROOT / "live"
+SESSION_LOG_ARCHIVE_DIR = SESSION_LOG_ROOT / "archive"
+SESSION_LOG_METADATA_DIR = SESSION_LOG_ROOT / "metadata"
+SESSION_LOG_RUNTIME_DIR = TMUX_CLI_HOME / "runtime"
+SESSION_LOG_ACTIVITY_DIR = SESSION_LOG_RUNTIME_DIR / "activity"
+SESSION_LOG_LOCK_DIR = TMUX_CLI_HOME / "locks"
+SESSION_LOGGING_MANUAL = TMUX_CLI_HOME / "logging.md"
+
 
 def ensure_dirs() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)

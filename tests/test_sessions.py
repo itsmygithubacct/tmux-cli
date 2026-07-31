@@ -268,23 +268,26 @@ class TimeoutHandlingTests(unittest.TestCase):
 
 class SessionLogLifecycleTests(unittest.TestCase):
 
-    def test_successful_kill_removes_session_log_state(self):
+    def test_successful_kill_discards_only_runtime_log_state(self):
         completed = subprocess.CompletedProcess(["tmux", "kill-session"], 0, "", "")
         with mock.patch("lib.sessions.subprocess.run", return_value=completed), \
-             mock.patch("lib.session_logs.remove") as remove:
+             mock.patch("lib.session_logs.discard_runtime") as discard:
             ok, err = sessions.kill("work")
         self.assertTrue(ok, err)
-        remove.assert_called_once_with("work")
+        discard.assert_called_once_with("work")
 
-    def test_successful_rename_rewires_logging_and_removes_old_state(self):
+    def test_successful_rename_rewires_logging_and_discards_runtime_state(self):
         completed = subprocess.CompletedProcess(["tmux", "rename-session"], 0, "", "")
         with mock.patch.object(sessions, "exists", side_effect=[True, False]), \
              mock.patch("lib.sessions.subprocess.run", return_value=completed), \
-             mock.patch("lib.session_logs.remove") as remove, \
+             mock.patch("lib.session_logs.discard_runtime") as discard, \
              mock.patch("lib.session_logs.ensure_logging") as ensure:
             ok, err = sessions.rename("old", "new")
         self.assertTrue(ok, err)
-        self.assertEqual(remove.call_args_list, [mock.call("new"), mock.call("old")])
+        self.assertEqual(
+            discard.call_args_list,
+            [mock.call("new"), mock.call("old")],
+        )
         ensure.assert_called_once_with("new")
 
 

@@ -59,11 +59,11 @@ this.
 | 5 | `ETIMEDOUT` | operation timed out |
 | 6 | `ENOSERVER` | no tmux server is running |
 | 7 | `ETMUX` | tmux command failed unexpectedly |
-| 8 | `ESTATE` | ``~/.tmux-browse`` state is corrupt or unwritable |
+| 8 | `ESTATE` | tmux-cli/tmux-browse state is corrupt or unwritable |
 | 9 | `EAUTH` | dashboard auth failed (dashboard-only, not `tb`) |
 | 130 | — | interrupted (SIGINT / Ctrl-C) |
 
-`ls`, `exists`, and `snapshot` are deliberately exempt from the
+`ls`, `exists`, `snapshot`, and every `logs` subcommand are deliberately exempt from the
 "no tmux server" short-circuit — they have meaningful zero-session
 behaviour (empty list / exit 3 / empty payload).
 
@@ -137,6 +137,31 @@ probe.
 ```bash
 tb exists work && tb exec work -- ./run_tests.sh
 ```
+
+### Permanent logs
+
+tmux-cli stores lossless, per-pane history under
+`~/.gpu_terminal/tmux-cli/logs`. Completed segments are compressed with
+`zstd -3` and are never deleted automatically.
+
+```bash
+tb logs                              # newest-first capture list
+tb logs list --session work
+tb logs show CAPTURE                 # reconstruct one pane stream
+tb logs grep -i 'migration'          # search across segment boundaries
+tb logs path [CAPTURE]
+tb logs verify [CAPTURE]
+tb logs recover                      # retry spools + copy in legacy logs
+tb logs manual
+```
+
+Capture IDs accept unambiguous prefixes. `show --json` returns content as
+base64. `grep` exits 1 when it finds no matches. All log commands work after
+the tmux server has exited.
+
+The storage layout, privacy model, direct `zstd`/`zstdgrep`/`rg -z` commands,
+recovery behavior, and legacy `~/.tmux-browse/session-logs` migration are
+documented in **[logging.md](logging.md)**.
 
 ### Config
 
@@ -466,7 +491,8 @@ With `--json`, returns both the structured data and the rendered text.
 |---|---|
 | `TB_DASHBOARD_HOST` | host used when building URLs in `tb web url/start` (default `localhost`) |
 | `TB_TTYD_BIND` | listener address for `tb web start` (default `127.0.0.1`; `--bind` takes precedence) |
-| `TB_SESSION_LOG_MAX_BYTES` | maximum active pipe-pane log size per session (default 10 MiB; rotations retain up to 8 MiB; killed/orphaned session logs are reaped) |
+| `TB_SESSION_LOG_MAX_BYTES` | maximum disposable activity-tail size per session (default 10 MiB; newest 8 MiB retained for idle detection) |
+| `TB_SESSION_LOG_SEGMENT_BYTES` | uncompressed bytes per permanent pane segment before atomic `zstd -3` rollover (default 8 MiB) |
 | `TB_COLOR` | `always` / `never` to override TTY detection for colour output |
 | `NO_COLOR` | if set (any value), disables colour |
 
@@ -485,6 +511,10 @@ With `--json`, returns both the structured data and the rendered text.
   was used (the pane wasn't a shell when the command started). Output is
   the captured diff. Force sentinel with `--strategy sentinel` if the pane
   actually is a shell.
+- **A capture is `pending`.** Its plaintext is intact under
+  `~/.gpu_terminal/tmux-cli/logs/live`. Install `zstd`, resolve any disk or
+  permission problem shown in `runtime/logging-errors.log`, then run
+  `tb logs recover`.
 - **Port collision when starting a ttyd.** `tb web start` refuses to stomp
   a port already in use and returns `{note: "port already in use"}`. Kill
   the offender or pick a different range in `lib/config.py`.

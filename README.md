@@ -5,9 +5,10 @@ sessions from the shell or from a language-model tool-use loop. Tables for
 humans; a stable `--json` envelope and stable, distinct exit codes for machines.
 
 Python 3.10+ and stdlib-only (`argparse`, `subprocess`, `urllib`, …) — **no
-pip dependencies**.
-The only optional external is [`ttyd`](https://github.com/tsl0922/ttyd), used by
-the `tb web` verbs.
+pip dependencies**. [`zstd`](https://facebook.github.io/zstd/) finalizes and
+reads permanent pane logs; if it is temporarily unavailable, plaintext is
+preserved for later recovery. The optional
+[`ttyd`](https://github.com/tsl0922/ttyd) executable is used by `tb web`.
 
 > Want the web dashboard too — every session as an embedded terminal in your
 > browser? See **[tmux-browse](https://github.com/itsmygithubacct/tmux-browse)**,
@@ -19,7 +20,7 @@ Clone and symlink:
 
 ```bash
 git clone https://github.com/itsmygithubacct/tmux-cli.git ~/tmux-cli
-cd ~/tmux-cli && make install      # symlinks tb.py -> ~/bin/tb
+cd ~/tmux-cli && make install      # links tb and installs the logging manual
 tb ls
 ```
 
@@ -30,6 +31,9 @@ curl -fsSL https://raw.githubusercontent.com/itsmygithubacct/tmux-cli/main/bin/u
 python3 update_tb.py --dir ~/bin/tmux-cli
 ```
 
+Both install paths copy [the permanent-log manual](docs/logging.md) to
+`~/.gpu_terminal/tmux-cli/logging.md`.
+
 ## Quick start
 
 ```bash
@@ -38,11 +42,13 @@ tb type work "make test"          # run a line in it
 tb wait work --idle 3             # block until the pane goes quiet
 tb capture work -n 200            # read the scrollback
 tb exec work --json -- pytest -q  # run a command, get {ok, exit_status, output}
+tb logs grep -i "failed"           # search permanent zstd pane history
 tb ls --json                      # machine-readable session list
 tb snapshot --tmux-only --capture work:0.0  # state + preview for polling UIs
 ```
 
-`tb --help` lists every verb. Full reference: **[docs/tb.md](docs/tb.md)**.
+`tb --help` lists every verb. See the **[full CLI reference](docs/tb.md)** and
+the **[permanent logging guide](docs/logging.md)**.
 
 ## For LLM tool-use
 

@@ -7,6 +7,7 @@ exercised here.
 
 import importlib.util
 import io
+import stat
 import sys
 import tarfile
 import tempfile
@@ -179,6 +180,78 @@ class TransactionalInstallTests(unittest.TestCase):
             self.assertEqual((dest / "tb.py").read_text(), "NEW TB\n")
             self.assertTrue((dest / "lib" / "current.py").is_file())
             self.assertFalse((dest / "lib" / "stale.py").exists())
+
+    def test_success_installs_owner_only_logging_manual(self):
+        tf = _make_tar({
+            "root/tb.py": b"NEW TB\n",
+            "root/lib/version.py": b'__version__ = "2.0"\n',
+            "root/docs/logging.md": b"# Permanent logs\n",
+        })
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            dest = base / "program"
+            data = base / "data"
+            with mock.patch.object(update_tb, "_download_tree", return_value=tf):
+                rc = update_tb.main([
+                    "--repo", "example/project",
+                    "--ref", "good",
+                    "--dir", str(dest),
+                    "--data-dir", str(data),
+                ])
+
+            self.assertEqual(rc, 0)
+            manual = data / "logging.md"
+            self.assertEqual(manual.read_text(), "# Permanent logs\n")
+            self.assertEqual(stat.S_IMODE(data.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(manual.stat().st_mode), 0o600)
+
+    def test_file_only_still_installs_logging_manual(self):
+        tf = _make_tar({
+            "root/tb.py": b"NEW TB\n",
+            "root/docs/logging.md": b"# Read me after uninstall\n",
+        })
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            dest = base / "program"
+            data = base / "data"
+            with mock.patch.object(update_tb, "_download_tree", return_value=tf):
+                rc = update_tb.main([
+                    "--repo", "example/project",
+                    "--ref", "good",
+                    "--dir", str(dest),
+                    "--data-dir", str(data),
+                    "--file-only",
+                ])
+
+            self.assertEqual(rc, 0)
+            self.assertFalse((dest / "lib").exists())
+            self.assertEqual(
+                (data / "logging.md").read_text(),
+                "# Read me after uninstall\n",
+            )
+
+    def test_update_refuses_symlink_logging_data_directory(self):
+        tf = _make_tar({
+            "root/tb.py": b"NEW TB\n",
+            "root/docs/logging.md": b"# Must not follow link\n",
+        })
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            target = base / "target"
+            target.mkdir()
+            data = base / "data-link"
+            data.symlink_to(target, target_is_directory=True)
+            with mock.patch.object(update_tb, "_download_tree", return_value=tf):
+                rc = update_tb.main([
+                    "--repo", "example/project",
+                    "--ref", "good",
+                    "--dir", str(base / "program"),
+                    "--data-dir", str(data),
+                    "--file-only",
+                ])
+
+            self.assertEqual(rc, 1)
+            self.assertFalse((target / "logging.md").exists())
 
     def test_install_io_failure_restores_both_old_paths(self):
         with tempfile.TemporaryDirectory() as d:
