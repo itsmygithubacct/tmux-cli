@@ -14,6 +14,17 @@ preserved for later recovery. The optional
 > browser? See **[tmux-browse](https://github.com/itsmygithubacct/tmux-browse)**,
 > which builds on this CLI and pulls it in as a submodule.
 
+## Watch it
+
+https://github.com/user-attachments/assets/b8e9d432-a0c3-4ede-9cdb-1f1d556c6b63
+
+**[tmux-cli: tmux for humans and LLMs](https://github.com/itsmygithubacct/tmux-cli/releases/download/media-v1/tmux-cli.mp4)**
+— a two-minute tour on a real server: session basics without attaching, the
+agent verbs and the JSON envelope, and the permanent zstd pane logs
+(1920×1080, 2m18s, 8 MB; published as a
+[media release](https://github.com/itsmygithubacct/tmux-cli/releases/tag/media-v1)
+so a clone stays small).
+
 ## Install
 
 Clone and symlink:
