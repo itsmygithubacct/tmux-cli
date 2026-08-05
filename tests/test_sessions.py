@@ -265,6 +265,35 @@ class TimeoutHandlingTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertEqual(err, "bad target")
 
+    def test_capture_target_trims_trailing_viewport_blanks(self):
+        # A sparse pane: two real lines, then the blank rows below the cursor
+        # that capture-pane always appends for the visible viewport.
+        target = sessions.Target(session="demo")
+        stdout = "demo$ python3 -m http.server\nServing HTTP ...\n" + "\n" * 46
+        done = subprocess.CompletedProcess(["tmux"], 0, stdout, "")
+        with mock.patch("lib.sessions.subprocess.run", return_value=done):
+            ok, content = sessions.capture_target(target, lines=8)
+        self.assertTrue(ok)
+        self.assertEqual(
+            content, "demo$ python3 -m http.server\nServing HTTP ...\n")
+
+    def test_capture_target_honors_line_limit_exactly(self):
+        target = sessions.Target(session="demo")
+        stdout = "\n".join(f"line{i}" for i in range(1, 51)) + "\n"
+        done = subprocess.CompletedProcess(["tmux"], 0, stdout, "")
+        with mock.patch("lib.sessions.subprocess.run", return_value=done):
+            ok, content = sessions.capture_target(target, lines=3)
+        self.assertTrue(ok)
+        self.assertEqual(content, "line48\nline49\nline50\n")
+
+    def test_capture_target_all_blank_pane_yields_empty(self):
+        target = sessions.Target(session="demo")
+        done = subprocess.CompletedProcess(["tmux"], 0, "\n" * 50, "")
+        with mock.patch("lib.sessions.subprocess.run", return_value=done):
+            ok, content = sessions.capture_target(target, lines=8)
+        self.assertTrue(ok)
+        self.assertEqual(content, "")
+
 
 class SessionLogLifecycleTests(unittest.TestCase):
 

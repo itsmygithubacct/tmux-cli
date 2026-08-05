@@ -368,7 +368,17 @@ def capture_target(target: Target, lines: int = 2000,
         return False, "tmux timed out"
     if r.returncode != 0:
         return False, (r.stderr or r.stdout).strip()
-    return True, r.stdout
+    # ``-S -N`` moves the start N lines into history, but capture-pane's end
+    # is always the bottom of the visible viewport: a sparse pane pads the
+    # result with the blank rows below its cursor, and the viewport rides on
+    # top of the N requested lines (so ``-n 8`` could print a full screen).
+    # Trim the artifact blanks, then honor ``lines`` exactly.
+    kept = r.stdout.split("\n")
+    while kept and kept[-1].strip() == "":
+        kept.pop()
+    if lines > 0:
+        kept = kept[-lines:]
+    return True, "\n".join(kept) + "\n" if kept else ""
 
 
 def session_activity(target: Target) -> int | None:
