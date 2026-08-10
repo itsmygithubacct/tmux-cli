@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import codecs
 import re
 import subprocess
 import sys
@@ -57,13 +58,46 @@ def _read_segment(path: Path, compressed: bool) -> bytes:
 
 
 def _capture_bytes(capture_id: str) -> bytes:
+    return b"".join(_capture_segments(capture_id))
+
+
+def _capture_segments(capture_id: str):
     entries = session_logs.capture_paths(capture_id)
     if not entries:
         raise StateError(f"capture has no readable segments: {capture_id}")
-    return b"".join(
-        _read_segment(path, compressed)
-        for _, path, compressed in entries
-    )
+    for _, path, compressed in entries:
+        yield _read_segment(path, compressed)
+
+
+def _capture_lines(capture_id: str):
+    """Yield reconstructed lines without joining the complete capture.
+
+    A segment can split either a line or the two bytes of CRLF. Holding only
+    the unfinished final line preserves ``bytes.splitlines()`` semantics while
+    bounding ordinary grep memory to one segment plus one logical line.
+    """
+    pending = b""
+    pending_cr = False
+    for segment in _capture_segments(capture_id):
+        # A CR at the prior segment's end already terminated its line. Swallow
+        # one leading LF so a split CRLF remains one boundary, not two.
+        if pending_cr and segment:
+            if segment.startswith(b"\n"):
+                segment = segment[1:]
+            pending_cr = False
+        data = pending + segment
+        pending = b""
+        if not data:
+            continue
+        pieces = data.splitlines()
+        if data.endswith(b"\r"):
+            pending_cr = True
+        elif not data.endswith(b"\n"):
+            pending = pieces.pop()
+        for line in pieces:
+            yield line
+    if pending:
+        yield pending
 
 
 def cmd_logs_list(args: argparse.Namespace) -> int:
@@ -124,8 +158,8 @@ def cmd_logs_path(args: argparse.Namespace) -> int:
 
 def cmd_logs_show(args: argparse.Namespace) -> int:
     capture_id = _capture_id(args.capture)
-    content = _capture_bytes(capture_id)
     if args.json:
+        content = _capture_bytes(capture_id)
         output.emit_json({
             "capture_id": capture_id,
             "encoding": "base64",
@@ -133,11 +167,26 @@ def cmd_logs_show(args: argparse.Namespace) -> int:
         })
     elif not args.quiet:
         stream: BinaryIO | Any = getattr(sys.stdout, "buffer", sys.stdout)
-        if isinstance(content, bytes) and hasattr(stream, "write"):
+        decoder = None
+        for content in _capture_segments(capture_id):
             try:
                 stream.write(content)
             except TypeError:
-                stream.write(content.decode("utf-8", "backslashreplace"))
+                # StringIO-like test/embedding streams have no binary buffer.
+                # An incremental decoder preserves a UTF-8 sequence split at
+                # a log-segment boundary.
+                if decoder is None:
+                    decoder = codecs.getincrementaldecoder("utf-8")(
+                        errors="backslashreplace",
+                    )
+                stream.write(decoder.decode(content, final=False))
+        if decoder is not None:
+            stream.write(decoder.decode(b"", final=True))
+    else:
+        # Quiet suppresses bytes, not validation. Preserve the command's
+        # failure contract for a missing or unreadable segment.
+        for _content in _capture_segments(capture_id):
+            pass
     return 0
 
 
@@ -169,8 +218,7 @@ def cmd_logs_grep(args: argparse.Namespace) -> int:
     for capture_id in capture_ids:
         # Search the reconstructed pane stream so a word or line split exactly
         # at a segment boundary still matches.
-        content = _capture_bytes(capture_id)
-        for line_number, line in enumerate(content.splitlines(), 1):
+        for line_number, line in enumerate(_capture_lines(capture_id), 1):
             if not matcher.search(line):
                 continue
             text = line.decode("utf-8", "backslashreplace")

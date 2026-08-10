@@ -103,6 +103,14 @@ class ListSessionsDedupTests(unittest.TestCase):
         self.assertEqual(out[0]["attached"], 3)
         self.assertEqual(out[0]["activity"], 2500)
 
+    def test_malformed_numeric_row_does_not_discard_valid_sessions(self):
+        rows = [
+            _tmux_row("broken", "", windows="not-a-number"),
+            _tmux_row("work", "", windows=2),
+        ]
+        out = self._run(rows)
+        self.assertEqual([row["name"] for row in out], ["work"])
+
 
 class ListPanesTests(unittest.TestCase):
 
@@ -125,6 +133,30 @@ class ListPanesTests(unittest.TestCase):
         self.assertEqual(panes[0]["pane"], "1")
         self.assertTrue(panes[0]["active"])
         self.assertIn("#{pane_id}", run.call_args.args[0][-1])
+
+    def test_malformed_numeric_row_does_not_discard_valid_panes(self):
+        rows = (
+            "work\t2\tbad\t0\t%8\tbash\tnot-a-pid\t/tmp\t80\t24\t0\n"
+            "work\t2\tlogs\t1\t%9\tpython\t1234\t/tmp/work\t120\t40\t1\n"
+        )
+        completed = subprocess.CompletedProcess(
+            ["tmux", "list-panes"], 0, rows, "",
+        )
+        with mock.patch("lib.sessions.subprocess.run", return_value=completed):
+            panes = sessions.list_panes()
+        self.assertEqual([pane["pane_id"] for pane in panes], ["%9"])
+
+    def test_malformed_active_flag_does_not_discard_valid_panes(self):
+        rows = (
+            "work\t2\tbad\t0\t%8\tbash\t1233\t/tmp\t80\t24\tyes\n"
+            "work\t2\tlogs\t1\t%9\tpython\t1234\t/tmp/work\t120\t40\t1\n"
+        )
+        completed = subprocess.CompletedProcess(
+            ["tmux", "list-panes"], 0, rows, "",
+        )
+        with mock.patch("lib.sessions.subprocess.run", return_value=completed):
+            panes = sessions.list_panes()
+        self.assertEqual([pane["pane_id"] for pane in panes], ["%9"])
 
 
 class PasteBufferTests(unittest.TestCase):

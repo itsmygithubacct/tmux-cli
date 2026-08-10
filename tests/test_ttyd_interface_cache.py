@@ -7,6 +7,7 @@ Verifies:
   - The ifconfig fallback parser handles a representative BSD/macOS stanza.
 """
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -94,6 +95,27 @@ class IfconfigFallbackTests(unittest.TestCase):
             raise FileNotFoundError("ifconfig")
         with mock.patch.object(ttyd.subprocess, "check_output", _missing):
             self.assertIsNone(ttyd._iface_from_ifconfig({"192.168.1.50"}))
+
+    def test_platform_probes_have_a_timeout(self):
+        with mock.patch.object(
+            ttyd.subprocess, "check_output", return_value="",
+        ) as check_output:
+            ttyd._iface_from_ip_addr({"192.0.2.1"})
+            ttyd._iface_from_ifconfig({"192.0.2.1"})
+        self.assertEqual(len(check_output.call_args_list), 2)
+        self.assertTrue(all(
+            call.kwargs.get("timeout") == 5
+            for call in check_output.call_args_list
+        ))
+
+    def test_platform_probe_timeout_falls_back_cleanly(self):
+        with mock.patch.object(
+            ttyd.subprocess,
+            "check_output",
+            side_effect=subprocess.TimeoutExpired("network-probe", 5),
+        ):
+            self.assertIsNone(ttyd._iface_from_ip_addr({"192.0.2.1"}))
+            self.assertIsNone(ttyd._iface_from_ifconfig({"192.0.2.1"}))
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ validation step.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -353,6 +354,60 @@ class RecordErrorResilienceTests(_IsolatedExt, unittest.TestCase):
         # The load failure was recorded under the raw name.
         entry = extensions._read_enabled()["agent.bak"]
         self.assertIsNotNone(entry.get("last_error"))
+
+
+class ExtensionStateDurabilityTests(_IsolatedExt, unittest.TestCase):
+
+    def test_state_is_private_and_atomic_replace_failure_keeps_old_data(self):
+        extensions._write_enabled({"first": {"enabled": True}})
+        self.assertEqual(self._enabled.stat().st_mode & 0o777, 0o600)
+        with mock.patch.object(
+            extensions.os, "replace", side_effect=OSError("simulated crash"),
+        ):
+            with self.assertRaises(OSError):
+                extensions._write_enabled({"second": {"enabled": True}})
+        self.assertEqual(
+            json.loads(self._enabled.read_text()),
+            {"first": {"enabled": True}},
+        )
+        leftovers = list(self._enabled.parent.glob(".extensions.json.*.tmp"))
+        self.assertEqual(leftovers, [])
+
+    def test_read_modify_write_keeps_parallel_extension_changes(self):
+        # Exercise separate interpreters, not just threads: dashboard HTTP,
+        # CLI and startup error recording can all mutate this file at once.
+        root = Path(__file__).resolve().parent.parent
+        programs = []
+        environment = dict(os.environ, HOME=self._state.name)
+        for index in range(12):
+            programs.append(subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; from pathlib import Path; "
+                    "from lib import config, extensions; "
+                    "path = Path(sys.argv[1]); "
+                    "config.STATE_DIR = path.parent; "
+                    "extensions.ENABLED_FILE = path; "
+                    f"extensions.enable('parallel-{index}')",
+                    str(self._enabled),
+                ],
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ))
+        failures = []
+        for process in programs:
+            stdout, stderr = process.communicate(timeout=20)
+            if process.returncode:
+                failures.append((process.returncode, stdout, stderr))
+        self.assertEqual(failures, [])
+        state = json.loads(self._enabled.read_text())
+        self.assertEqual(
+            set(state), {f"parallel-{index}" for index in range(12)},
+        )
 
 
 class CLIDriverTests(_IsolatedExt, unittest.TestCase):

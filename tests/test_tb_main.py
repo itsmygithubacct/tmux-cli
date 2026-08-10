@@ -122,6 +122,44 @@ class ArgparseErrorTests(unittest.TestCase):
         self.assertEqual(env["exit"], 2)
 
 
+class NumericArgumentBoundsTests(unittest.TestCase):
+    def setUp(self):
+        self.p = tb._build_parser()
+
+    def test_non_positive_counts_lines_intervals_and_exec_times_are_rejected(self):
+        cases = (
+            ["range", "0", "bash"],
+            ["range", "1", "bash", "--start", "-1"],
+            ["capture", "work", "--lines", "0"],
+            ["tail", "work", "--interval", "-0.1"],
+            ["watch", "work", "--lines", "-1"],
+            ["watch", "work", "--interval", "0"],
+            ["wait", "work", "--idle", "0"],
+            ["exec", "work", "--timeout", "0", "--", "true"],
+            ["exec", "work", "--idle-sec", "-1", "--", "true"],
+            ["ls", "--running-within", "0"],
+            ["snapshot", "--capture", "work", "--lines", "0"],
+        )
+        for argv in cases:
+            with self.subTest(argv=argv), self.assertRaises(UsageError):
+                self.p.parse_args(argv)
+
+    def test_non_finite_polling_values_are_rejected(self):
+        for value in ("nan", "inf", "-inf"):
+            with self.subTest(value=value), self.assertRaises(UsageError):
+                self.p.parse_args(["watch", "work", "--interval", value])
+
+    def test_zero_wait_timeout_and_zero_range_start_remain_valid(self):
+        self.assertEqual(
+            self.p.parse_args(["wait", "work", "--timeout", "0"]).timeout,
+            0,
+        )
+        self.assertEqual(
+            self.p.parse_args(["range", "1", "bash", "--start", "0"]).start,
+            0,
+        )
+
+
 class NeedsServerMappingTests(unittest.TestCase):
     """The per-verb server gate must match the intended skip set exactly."""
 
@@ -194,6 +232,32 @@ class ServerGateTests(_StubMixin, unittest.TestCase):
         rc, stub = self._run(lifecycle, "cmd_a", ["a", "s"], server=False)
         self.assertEqual(rc, 0)
         stub.assert_called_once()
+
+
+class ExistsVerbTests(unittest.TestCase):
+    def test_json_absence_is_a_successful_boolean_query(self):
+        buf = io.StringIO()
+        with mock.patch.object(read.sessions, "exists", return_value=False), \
+             mock.patch.object(sys, "stdout", buf):
+            rc = tb.main(["exists", "missing", "--json"])
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            json.loads(buf.getvalue()),
+            {
+                "ok": True,
+                "data": {"target": "=missing:", "exists": False},
+            },
+        )
+
+    def test_plain_absence_uses_the_not_found_exit_code(self):
+        buf = io.StringIO()
+        with mock.patch.object(read.sessions, "exists", return_value=False), \
+             mock.patch.object(sys, "stderr", buf):
+            rc = tb.main(["exists", "missing"])
+
+        self.assertEqual(rc, 3)
+        self.assertIn("tb: no such session: missing", buf.getvalue())
 
 
 class WebBindTests(unittest.TestCase):

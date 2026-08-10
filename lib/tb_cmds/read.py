@@ -7,7 +7,7 @@ import time
 
 from .. import output, sessions
 from ..errors import SessionNotFound, TmuxFailed
-from ._common import parse_target, require_target
+from ._common import positive_float, positive_int, parse_target, require_target
 
 
 def cmd_ls(args: argparse.Namespace) -> int:
@@ -162,7 +162,7 @@ def register(sub, common) -> None:
     p = sub.add_parser("ls", help="list tmux sessions", parents=[common])
     p.add_argument("--running", action="store_true",
                    help="only sessions with activity in the last 30s")
-    p.add_argument("--running-within", type=int, metavar="SEC",
+    p.add_argument("--running-within", type=positive_int, metavar="SEC",
                    help="only sessions with activity in the last SEC seconds "
                         "(overrides --running)")
     p.add_argument("--attached", action="store_true",
@@ -178,7 +178,7 @@ def register(sub, common) -> None:
     p = sub.add_parser("capture", help="dump pane scrollback as plain text",
                        parents=[common])
     p.add_argument("target")
-    p.add_argument("-n", "--lines", type=int, default=2000,
+    p.add_argument("-n", "--lines", type=positive_int, default=2000,
                    help="history lines to include (default: 2000)")
     p.add_argument("--ansi", action="store_true",
                    help="preserve ANSI escapes (tmux -e)")
@@ -187,9 +187,9 @@ def register(sub, common) -> None:
     p = sub.add_parser("tail", help="print pane output; -f to follow",
                        parents=[common])
     p.add_argument("target")
-    p.add_argument("-n", "--lines", type=int, default=200)
+    p.add_argument("-n", "--lines", type=positive_int, default=200)
     p.add_argument("-f", "--follow", action="store_true")
-    p.add_argument("--interval", type=float, default=0.5,
+    p.add_argument("--interval", type=positive_float, default=0.5,
                    help="follow poll interval in seconds (default: 0.5)")
     p.set_defaults(func=cmd_tail)
 

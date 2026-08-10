@@ -16,10 +16,14 @@ backend for the Config pane's **Download and enable** button.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import json
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -133,7 +137,7 @@ def discover() -> list[Path]:
     )
 
 
-def _read_enabled() -> dict[str, dict[str, Any]]:
+def _read_enabled_unlocked() -> dict[str, dict[str, Any]]:
     if not ENABLED_FILE.exists():
         return {}
     try:
@@ -149,12 +153,74 @@ def _read_enabled() -> dict[str, dict[str, Any]]:
     return out
 
 
-def _write_enabled(data: dict[str, dict[str, Any]]) -> None:
+@contextmanager
+def _enabled_lock(*, exclusive: bool):
+    """Serialize extension state without locking the replaceable data inode."""
     config.ensure_dirs()
-    ENABLED_FILE.write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    lock_path = ENABLED_FILE.with_name(ENABLED_FILE.name + ".lock")
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _write_enabled_unlocked(data: dict[str, dict[str, Any]]) -> None:
+    """Durably replace extension state while the caller holds its lock."""
+    payload = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{ENABLED_FILE.name}.", suffix=".tmp",
+        dir=str(ENABLED_FILE.parent),
     )
+    tmp = Path(raw_tmp)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, ENABLED_FILE)
+        directory_fd = os.open(
+            ENABLED_FILE.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _read_enabled() -> dict[str, dict[str, Any]]:
+    with _enabled_lock(exclusive=False):
+        return _read_enabled_unlocked()
+
+
+def _write_enabled(data: dict[str, dict[str, Any]]) -> None:
+    with _enabled_lock(exclusive=True):
+        _write_enabled_unlocked(data)
+
+
+def _update_enabled(change):
+    """Apply one read-modify-write transaction and return ``change``'s result."""
+    with _enabled_lock(exclusive=True):
+        data = _read_enabled_unlocked()
+        result = change(data)
+        _write_enabled_unlocked(data)
+        return result
 
 
 def status() -> list[dict[str, Any]]:
@@ -203,25 +269,25 @@ def status() -> list[dict[str, Any]]:
 
 def enable(name: str) -> dict[str, Any]:
     name = _validate_extension_name(name)
-    data = _read_enabled()
-    entry = data.get(name, {})
-    entry["enabled"] = True
-    entry["enabled_ts"] = int(time.time())
-    entry.pop("last_error", None)
-    data[name] = entry
-    _write_enabled(data)
-    return entry
+    def change(data):
+        entry = data.get(name, {})
+        entry["enabled"] = True
+        entry["enabled_ts"] = int(time.time())
+        entry.pop("last_error", None)
+        data[name] = entry
+        return entry
+    return _update_enabled(change)
 
 
 def disable(name: str) -> dict[str, Any]:
     name = _validate_extension_name(name)
-    data = _read_enabled()
-    entry = data.get(name, {})
-    entry["enabled"] = False
-    entry["disabled_ts"] = int(time.time())
-    data[name] = entry
-    _write_enabled(data)
-    return entry
+    def change(data):
+        entry = data.get(name, {})
+        entry["enabled"] = False
+        entry["disabled_ts"] = int(time.time())
+        data[name] = entry
+        return entry
+    return _update_enabled(change)
 
 
 def record_error(name: str, message: str) -> None:
@@ -241,11 +307,11 @@ def record_error(name: str, message: str) -> None:
     name = (name or "").strip()
     if not name:
         return
-    data = _read_enabled()
-    entry = data.get(name, {})
-    entry["last_error"] = message
-    data[name] = entry
-    _write_enabled(data)
+    def change(data):
+        entry = data.get(name, {})
+        entry["last_error"] = message
+        data[name] = entry
+    _update_enabled(change)
 
 
 def _validate_extension_name(name: str) -> str:
@@ -596,12 +662,12 @@ def uninstall(name: str, *, remove_state: bool = False) -> dict[str, Any]:
 
     # Flip enabled=false and annotate the uninstall so the UI can
     # distinguish "user disabled" from "user uninstalled".
-    data = _read_enabled()
-    entry = data.get(name, {})
-    entry["enabled"] = False
-    entry["uninstalled_ts"] = int(time.time())
-    data[name] = entry
-    _write_enabled(data)
+    def change(data):
+        entry = data.get(name, {})
+        entry["enabled"] = False
+        entry["uninstalled_ts"] = int(time.time())
+        data[name] = entry
+    _update_enabled(change)
 
     state_removed: list[str] = []
     state_missing: list[str] = []

@@ -115,8 +115,79 @@ class ExtractLibTests(unittest.TestCase):
             self.assertEqual(dest.joinpath("config.py").stat().st_mode & 0o777,
                              0o644)
 
+    def test_member_count_and_size_limits_are_enforced(self):
+        tf = _make_tar({
+            "root/lib/one.py": b"12345",
+            "root/lib/two.py": b"x",
+        })
+        with tf, tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(update_tb, "_MAX_ARCHIVE_MEMBERS", 1):
+            with self.assertRaises(tarfile.TarError):
+                update_tb._extract_lib(tf, "root", Path(d) / "lib")
+
+        tf = _make_tar({"root/lib/large.py": b"12345"})
+        with tf, tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(update_tb, "_MAX_LIB_MEMBER_BYTES", 4):
+            with self.assertRaises(tarfile.TarError):
+                update_tb._extract_lib(tf, "root", Path(d) / "lib")
+
+        tf = _make_tar({
+            "root/first.bin": b"123",
+            "root/lib/current.py": b"456",
+        })
+        with tf, tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(update_tb, "_MAX_ARCHIVE_TOTAL_BYTES", 5):
+            with self.assertRaises(tarfile.TarError):
+                update_tb._extract_lib(tf, "root", Path(d) / "lib")
+
 
 class VersionHelperTests(unittest.TestCase):
+
+    def test_fetch_rejects_a_stream_over_the_limit(self):
+        class Response(io.BytesIO):
+            headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        with mock.patch.object(
+            update_tb.urllib.request,
+            "urlopen",
+            return_value=Response(b"12345"),
+        ):
+            with self.assertRaisesRegex(ValueError, "download exceeds"):
+                update_tb._fetch("https://example.invalid", max_bytes=4)
+
+    def test_fetch_rejects_an_oversized_content_length_before_reading(self):
+        class Response(io.BytesIO):
+            headers = {"Content-Length": "5"}
+
+            def __init__(self):
+                super().__init__(b"")
+                self.was_read = False
+
+            def read(self, *args):
+                self.was_read = True
+                return super().read(*args)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                self.close()
+
+        response = Response()
+        with mock.patch.object(
+            update_tb.urllib.request,
+            "urlopen",
+            return_value=response,
+        ):
+            with self.assertRaisesRegex(ValueError, "download exceeds"):
+                update_tb._fetch("https://example.invalid", max_bytes=4)
+        self.assertFalse(response.was_read)
 
     def test_version_of_parses(self):
         self.assertEqual(

@@ -1,5 +1,8 @@
 """Dashboard config normalization + save/load round-trip."""
 
+import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -83,6 +86,7 @@ class SaveLoadRoundTripTests(unittest.TestCase):
         self.assertEqual(saved, loaded)
         self.assertEqual(loaded["auto_refresh"], False)
         self.assertEqual(loaded["refresh_seconds"], 10)
+        self.assertEqual(cfg.DASHBOARD_CONFIG_FILE.stat().st_mode & 0o777, 0o600)
 
     def test_load_without_file_returns_defaults(self):
         self.assertEqual(dc.load(), dc.DEFAULTS)
@@ -92,6 +96,72 @@ class SaveLoadRoundTripTests(unittest.TestCase):
         cfg.DASHBOARD_CONFIG_FILE.write_text("{ not json")
         # Fall back silently — broken config must never crash the dashboard.
         self.assertEqual(dc.load(), dc.DEFAULTS)
+
+    def test_replace_failure_keeps_the_previous_complete_config(self):
+        dc.save({"refresh_seconds": 10})
+        with mock.patch.object(dc.os, "replace", side_effect=OSError("crash")):
+            with self.assertRaises(OSError):
+                dc.save({"refresh_seconds": 20})
+        self.assertEqual(dc.load()["refresh_seconds"], 10)
+        self.assertEqual(
+            list(cfg.DASHBOARD_CONFIG_FILE.parent.glob(
+                ".dashboard-config.json.*.tmp",
+            )),
+            [],
+        )
+
+    def test_update_values_applies_one_normalized_batch(self):
+        saved = dc.update_values({
+            "auto_refresh": "true",
+            "refresh_seconds": "12",
+        })
+        self.assertTrue(saved["auto_refresh"])
+        self.assertEqual(saved["refresh_seconds"], 12)
+        self.assertEqual(saved, dc.load())
+
+    def test_parallel_independent_key_updates_are_all_retained(self):
+        root = Path(__file__).resolve().parent.parent
+        keys = (
+            "auto_refresh",
+            "day_mode",
+            "show_launch_codex",
+            "show_launch_kimi",
+            "show_launch_monitor",
+            "show_launch_top",
+            "show_topbar_refresh",
+            "show_body_send_bar",
+        )
+        environment = dict(os.environ, HOME=self._tmp.name)
+        programs = [
+            subprocess.Popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import sys; from pathlib import Path; "
+                    "from lib import config, dashboard_config; "
+                    "path = Path(sys.argv[1]); "
+                    "config.STATE_DIR = path.parent; "
+                    "config.DASHBOARD_CONFIG_FILE = path; "
+                    "dashboard_config.set_value(sys.argv[2], 'true')",
+                    str(cfg.DASHBOARD_CONFIG_FILE),
+                    key,
+                ],
+                cwd=root,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for key in keys
+        ]
+        failures = []
+        for process in programs:
+            stdout, stderr = process.communicate(timeout=20)
+            if process.returncode:
+                failures.append((process.returncode, stdout, stderr))
+        self.assertEqual(failures, [])
+        state = json.loads(cfg.DASHBOARD_CONFIG_FILE.read_text())
+        self.assertTrue(all(state[key] is True for key in keys))
 
 
 if __name__ == "__main__":

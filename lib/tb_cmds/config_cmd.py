@@ -69,9 +69,7 @@ def cmd_config_get(args: argparse.Namespace) -> int:
 def cmd_config_set(args: argparse.Namespace) -> int:
     _check_config_lock()
     key = _require_key(args.key)
-    current = dashboard_config.load()
-    current[key] = args.value
-    saved = dashboard_config.save(current)
+    saved = dashboard_config.set_value(key, args.value)
     value = saved[key]
     if args.json:
         output.emit_json({

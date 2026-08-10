@@ -130,6 +130,24 @@ class LogCommandTests(_IsolatedLogCommands, unittest.TestCase):
         value = json.loads(stream.getvalue())["data"]
         self.assertEqual(base64.b64decode(value["content"]), payload)
 
+    def test_show_plain_streams_exact_bytes_across_segments(self):
+        payload = b"split UTF-8: \xe7\x95\x8c\nsecond line\n"
+        self._capture(payload)
+        args = types.SimpleNamespace(
+            capture=self.CAPTURE[:12],
+            json=False,
+            quiet=False,
+        )
+
+        class BinaryStdout:
+            def __init__(self):
+                self.buffer = io.BytesIO()
+
+        stream = BinaryStdout()
+        with mock.patch.object(sys, "stdout", stream):
+            logs.cmd_logs_show(args)
+        self.assertEqual(stream.buffer.getvalue(), payload)
+
     def test_grep_searches_across_compressed_segments(self):
         self._capture()
         args = types.SimpleNamespace(
@@ -149,6 +167,30 @@ class LogCommandTests(_IsolatedLogCommands, unittest.TestCase):
         matches = json.loads(stream.getvalue())["data"]["matches"]
         self.assertEqual(len(matches), 1)
         self.assertIn("migration complete", matches[0]["text"])
+
+    def test_streamed_line_split_preserves_crlf_across_segment_boundary(self):
+        cases = (
+            (b"first\r\nsecond\rthird\n", (6, 7, 14)),
+            (b"\r\n\nlast", (1, 1, 2, 3)),
+            (b"no final newline", (2, 5, 8)),
+            (b"trailing carriage return\r", (4, 12, 24)),
+        )
+        for payload, cuts in cases:
+            segments = []
+            offset = 0
+            for cut in cuts:
+                segments.append(payload[offset:cut])
+                offset = cut
+            segments.append(payload[offset:])
+            with self.subTest(payload=payload), mock.patch.object(
+                logs,
+                "_capture_segments",
+                return_value=iter(segments),
+            ):
+                self.assertEqual(
+                    list(logs._capture_lines(self.CAPTURE)),
+                    payload.splitlines(),
+                )
 
     def test_verify_accepts_valid_frames_and_contiguous_sequence(self):
         self._capture()

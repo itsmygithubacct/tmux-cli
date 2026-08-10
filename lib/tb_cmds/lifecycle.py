@@ -17,7 +17,14 @@ from ..errors import (
     UsageError,
 )
 from ..targeting import Target
-from ._common import parse_target, require_target
+from ._common import (
+    nonnegative_float,
+    nonnegative_int,
+    parse_target,
+    positive_float,
+    positive_int,
+    require_target,
+)
 
 
 def _auto_name() -> str:
@@ -281,13 +288,14 @@ def register(sub, common) -> None:
         help="create N sessions (<base>_1..<base>_N) and run a command in each",
         parents=[common],
     )
-    p.add_argument("count", type=int, help="how many sessions to create")
+    p.add_argument("count", type=positive_int,
+                   help="how many sessions to create")
     p.add_argument("command",
                    help="command to run in each session; its first word is "
                         "the default session base name")
     p.add_argument("--name", "-n",
                    help="session base name (default: first word of command)")
-    p.add_argument("--start", type=int, default=1,
+    p.add_argument("--start", type=nonnegative_int, default=1,
                    help="first index for the numeric suffix (default: 1)")
     p.add_argument("--cwd", help="starting directory for every session")
     p.add_argument("--no-run", action="store_true",
@@ -311,11 +319,11 @@ def register(sub, common) -> None:
                         "(e.g. --key Enter, --key C-c)")
     p.add_argument("--name", "-n", required=True,
                    help="session base name (the <base> in <base>_N)")
-    p.add_argument("--idle", type=float, default=2.0,
+    p.add_argument("--idle", type=positive_float, default=2.0,
                    help="seconds of quiet that count as idle (default: 2)")
-    p.add_argument("--timeout", type=float, default=0,
+    p.add_argument("--timeout", type=nonnegative_float, default=0,
                    help="per-pane idle-wait timeout (0 = no timeout)")
-    p.add_argument("--start", type=int, default=1,
+    p.add_argument("--start", type=nonnegative_int, default=1,
                    help="lowest <base>_N index to include (default: 1)")
     p.set_defaults(func=cmd_stagger)
 

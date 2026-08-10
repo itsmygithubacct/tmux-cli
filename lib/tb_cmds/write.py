@@ -7,7 +7,7 @@ import sys
 
 from .. import exec_runner, output, sessions
 from ..errors import TmuxFailed, UsageError
-from ._common import require_target
+from ._common import positive_float, require_target
 
 
 def cmd_send(args: argparse.Namespace) -> int:
@@ -133,12 +133,12 @@ def register(sub, common) -> None:
         parents=[common],
     )
     p.add_argument("target")
-    p.add_argument("--timeout", type=float, default=30.0,
+    p.add_argument("--timeout", type=positive_float, default=30.0,
                    help="overall timeout in seconds (default: 30)")
     p.add_argument("--strategy", choices=("auto", "sentinel", "idle"),
                    default="auto",
                    help="sentinel (shell only) or idle (generic)")
-    p.add_argument("--idle-sec", type=float, default=2.0,
+    p.add_argument("--idle-sec", type=positive_float, default=2.0,
                    help="idle-strategy: seconds of quiet = done (default: 2)")
     p.add_argument("--clear", action="store_true",
                    help="send C-u C-k first to clear any half-typed line")

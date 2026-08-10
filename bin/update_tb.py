@@ -44,6 +44,12 @@ DEFAULT_REPO = "itsmygithubacct/tmux-cli"
 DEFAULT_DATA_DIR = "~/.gpu_terminal/tmux-cli"
 _UA = {"User-Agent": "tmux-cli-update_tb"}
 _VERSION_RE = re.compile(r'^__version__\s*=\s*"([^"]+)"', re.MULTILINE)
+_MAX_DOWNLOAD_BYTES = 64 * 1024 * 1024
+_MAX_ARCHIVE_MEMBERS = 4096
+_MAX_ARCHIVE_TOTAL_BYTES = 128 * 1024 * 1024
+_MAX_TEXT_MEMBER_BYTES = 4 * 1024 * 1024
+_MAX_LIB_MEMBER_BYTES = 8 * 1024 * 1024
+_MAX_LIB_TOTAL_BYTES = 64 * 1024 * 1024
 
 
 def _die(msg: str, code: int = 1) -> "int":
@@ -55,10 +61,33 @@ def _say(msg: str) -> None:
     print(f"==> {msg}")
 
 
-def _fetch(url: str, *, timeout: float = 30.0) -> bytes:
+def _fetch(
+    url: str,
+    *,
+    timeout: float = 30.0,
+    max_bytes: int = _MAX_DOWNLOAD_BYTES,
+) -> bytes:
     req = urllib.request.Request(url, headers=_UA)
     with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 (trusted host)
-        return r.read()
+        raw_length = getattr(r, "headers", {}).get("Content-Length")
+        if raw_length is not None:
+            try:
+                content_length = int(raw_length)
+            except ValueError:
+                content_length = None
+            if content_length is not None and content_length > max_bytes:
+                raise ValueError(f"download exceeds {max_bytes} byte limit")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = r.read(min(64 * 1024, max_bytes + 1 - total))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError(f"download exceeds {max_bytes} byte limit")
+        return b"".join(chunks)
 
 
 def _version_of(text: str) -> str | None:
@@ -102,14 +131,44 @@ def _download_tree(repo: str, ref: str) -> tarfile.TarFile:
 
 def _extract_member_text(tf: tarfile.TarFile, root: str, rel: str) -> str | None:
     try:
-        f = tf.extractfile(f"{root}/{rel}")
+        member = tf.getmember(f"{root}/{rel}")
     except KeyError:
         return None
+    if not member.isfile():
+        raise tarfile.TarError(f"expected a regular file: {member.name!r}")
+    if member.size < 0 or member.size > _MAX_TEXT_MEMBER_BYTES:
+        raise tarfile.TarError(
+            f"archive member exceeds {_MAX_TEXT_MEMBER_BYTES} byte limit: "
+            f"{member.name!r}"
+        )
+    f = tf.extractfile(member)
     return f.read().decode("utf-8") if f else None
 
 
 class _NoLibError(Exception):
     """Raised when the archive contains no ``lib/`` members."""
+
+
+def _bounded_archive_members(tf: tarfile.TarFile) -> list[tarfile.TarInfo]:
+    """Read archive metadata without allowing an unbounded member table."""
+    members: list[tarfile.TarInfo] = []
+    total_bytes = 0
+    for member in tf:
+        if len(members) >= _MAX_ARCHIVE_MEMBERS:
+            raise tarfile.TarError(
+                f"archive has more than {_MAX_ARCHIVE_MEMBERS} members"
+            )
+        if member.size < 0:
+            raise tarfile.TarError(
+                f"archive member has a negative size: {member.name!r}"
+            )
+        total_bytes += member.size
+        if total_bytes > _MAX_ARCHIVE_TOTAL_BYTES:
+            raise tarfile.TarError(
+                f"archive expands beyond {_MAX_ARCHIVE_TOTAL_BYTES} byte limit"
+            )
+        members.append(member)
+    return members
 
 
 def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
@@ -129,7 +188,9 @@ def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
     prefix = root_path.parts + ("lib",)
     members: list[tuple[tarfile.TarInfo, tuple[str, ...]]] = []
     found_lib = False
-    for member in tf.getmembers():
+    archive_members = _bounded_archive_members(tf)
+    total_bytes = 0
+    for member in archive_members:
         path = PurePosixPath(member.name)
         parts = path.parts
         if len(parts) < len(prefix) or parts[:len(prefix)] != prefix:
@@ -140,6 +201,17 @@ def _extract_lib(tf: tarfile.TarFile, root: str, dest_lib: Path) -> None:
         if not (member.isdir() or member.isfile()):
             raise tarfile.TarError(
                 f"links and special files are not allowed: {member.name!r}")
+        if member.isfile():
+            if member.size < 0 or member.size > _MAX_LIB_MEMBER_BYTES:
+                raise tarfile.TarError(
+                    f"archive member exceeds {_MAX_LIB_MEMBER_BYTES} byte "
+                    f"limit: {member.name!r}"
+                )
+            total_bytes += member.size
+            if total_bytes > _MAX_LIB_TOTAL_BYTES:
+                raise tarfile.TarError(
+                    f"lib/ exceeds {_MAX_LIB_TOTAL_BYTES} byte limit"
+                )
         relative = parts[len(prefix):]
         if relative:
             members.append((member, relative))
@@ -336,17 +408,19 @@ def main(argv: list[str] | None = None) -> int:
 
     with tf:
         # Archives extract under a single top-level dir, e.g. tmux-browse-<sha>/.
-        names = tf.getnames()
-        if not names:
-            return _die("empty archive")
-        root = names[0].split("/", 1)[0]
-
-        tb_text = _extract_member_text(tf, root, "tb.py")
-        if tb_text is None:
-            return _die(f"tb.py not found in {args.repo}@{ref}")
-        pulled_ver = _version_of(
-            _extract_member_text(tf, root, "lib/version.py") or "")
-        manual_text = _extract_member_text(tf, root, "docs/logging.md")
+        try:
+            members = _bounded_archive_members(tf)
+            if not members:
+                return _die("empty archive")
+            root = members[0].name.split("/", 1)[0]
+            tb_text = _extract_member_text(tf, root, "tb.py")
+            if tb_text is None:
+                return _die(f"tb.py not found in {args.repo}@{ref}")
+            pulled_ver = _version_of(
+                _extract_member_text(tf, root, "lib/version.py") or "")
+            manual_text = _extract_member_text(tf, root, "docs/logging.md")
+        except (tarfile.TarError, UnicodeError) as e:
+            return _die(f"refusing archive metadata: {e}")
         _say(f"available: {pulled_ver or '?'}")
 
         if args.check:

@@ -13,7 +13,12 @@ import time
 
 from .. import output, sessions
 from ..errors import Timeout, TmuxFailed
-from ._common import require_target
+from ._common import (
+    nonnegative_float,
+    positive_float,
+    positive_int,
+    require_target,
+)
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -85,15 +90,15 @@ def register(sub, common) -> None:
                        help="block until pane has been idle for N seconds",
                        parents=[common])
     p.add_argument("target")
-    p.add_argument("--idle", type=float, default=2.0,
+    p.add_argument("--idle", type=positive_float, default=2.0,
                    help="seconds of silence required (default: 2)")
-    p.add_argument("--timeout", type=float, default=0,
+    p.add_argument("--timeout", type=nonnegative_float, default=0,
                    help="overall timeout (0 = no timeout)")
     p.set_defaults(func=cmd_wait)
 
     p = sub.add_parser("watch", help="stream activity events for a session",
                        parents=[common])
     p.add_argument("target")
-    p.add_argument("--interval", type=float, default=0.5)
-    p.add_argument("-n", "--lines", type=int, default=100)
+    p.add_argument("--interval", type=positive_float, default=0.5)
+    p.add_argument("-n", "--lines", type=positive_int, default=100)
     p.set_defaults(func=cmd_watch)

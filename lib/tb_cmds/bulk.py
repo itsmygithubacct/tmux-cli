@@ -11,7 +11,7 @@ import time
 
 from .. import config, output, ports, sessions, ttyd
 from ..errors import UsageError
-from ._common import parse_target, require_target
+from ._common import parse_target, positive_int, require_target
 
 
 def _dashboard_status() -> dict:
@@ -186,7 +186,7 @@ def register(sub, common) -> None:
     )
     p.add_argument(
         "--lines",
-        type=int,
+        type=positive_int,
         default=None,
         metavar="N",
         help="history lines for --capture (default: 80)",

@@ -18,9 +18,11 @@ import fcntl
 import hashlib
 import json
 import os
+import selectors
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, BinaryIO
@@ -177,10 +179,12 @@ def _archive_matches_source(
     archive: Path,
     *,
     zstd: str,
+    timeout: float = 120.0,
 ) -> bool:
     """True when an existing archive expands to exactly ``source``."""
     try:
         source_digest = _sha256_file(source)
+        source_size = source.stat().st_size
     except OSError:
         return False
     archive_digest = hashlib.sha256()
@@ -193,21 +197,47 @@ def _archive_matches_source(
     except OSError:
         return False
     assert proc.stdout is not None
+    selector = selectors.DefaultSelector()
+    deadline = time.monotonic() + timeout
+    expanded = 0
     try:
+        selector.register(proc.stdout, selectors.EVENT_READ)
         with proc.stdout:
             while True:
-                chunk = proc.stdout.read(_COPY_CHUNK)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not selector.select(remaining):
+                    return False
+                chunk = os.read(proc.stdout.fileno(), _COPY_CHUNK)
                 if not chunk:
                     break
+                expanded += len(chunk)
+                # A valid round trip cannot expand past its source. Stop a
+                # corrupt or adversarial frame before it can stream an
+                # unbounded amount of data through this verifier.
+                if expanded > source_size:
+                    return False
                 archive_digest.update(chunk)
-        return proc.wait() == 0 and archive_digest.digest() == source_digest
-    except OSError:
-        try:
-            proc.kill()
-        except OSError:
-            pass
-        proc.wait()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        return (
+            proc.wait(timeout=remaining) == 0
+            and expanded == source_size
+            and archive_digest.digest() == source_digest
+        )
+    except (OSError, subprocess.TimeoutExpired):
         return False
+    finally:
+        selector.close()
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
 
 def finalize_segment(

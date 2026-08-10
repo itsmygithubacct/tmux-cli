@@ -8,6 +8,9 @@ __init__).
 
 from __future__ import annotations
 
+import argparse
+import math
+
 from .. import sessions, targeting
 from ..errors import SessionNotFound, UsageError
 from ..targeting import Target
@@ -31,3 +34,33 @@ def require_target(expr: str) -> Target:
     if not sessions.exists(t.session):
         raise SessionNotFound(f"no such session: {t.session}")
     return t
+
+
+def positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
+def nonnegative_int(value: str) -> int:
+    parsed = int(value)
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be a non-negative integer")
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a finite positive number")
+    return parsed
+
+
+def nonnegative_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError(
+            "must be a finite non-negative number",
+        )
+    return parsed

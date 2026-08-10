@@ -277,6 +277,28 @@ class BoundedActivityWriterTests(unittest.TestCase):
         session_log_writer._write_all(stream, b"abcdef")
         self.assertEqual(stream.value, b"abcdef")
 
+    def test_archive_comparison_has_a_deadline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.log"
+            archive = root / "archive.zst"
+            sleeper = root / "sleeping-zstd"
+            source.write_bytes(b"source")
+            archive.write_bytes(b"archive")
+            sleeper.write_text(
+                f"#!{sys.executable}\nimport time\ntime.sleep(60)\n",
+                encoding="utf-8",
+            )
+            sleeper.chmod(0o700)
+            started = time.monotonic()
+            self.assertFalse(session_log_writer._archive_matches_source(
+                source,
+                archive,
+                zstd=str(sleeper),
+                timeout=0.05,
+            ))
+            self.assertLess(time.monotonic() - started, 2.0)
+
 
 @unittest.skipUnless(shutil.which("zstd"), "zstd is required")
 class PermanentCaptureWriterTests(_IsolatedLogTree, unittest.TestCase):

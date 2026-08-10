@@ -286,8 +286,13 @@ def _iface_from_ip_addr(targets: set[str]) -> str | None:
             ["ip", "-o", "addr", "show"],
             text=True,
             stderr=subprocess.DEVNULL,
+            timeout=5,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ):
         return None
     except Exception:
         return None
@@ -311,8 +316,13 @@ def _iface_from_ifconfig(targets: set[str]) -> str | None:
             ["ifconfig", "-a"],
             text=True,
             stderr=subprocess.DEVNULL,
+            timeout=5,
         )
-    except (FileNotFoundError, subprocess.CalledProcessError):
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+    ):
         return None
     except Exception:
         return None

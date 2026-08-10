@@ -141,13 +141,24 @@ def list_sessions() -> list[Session]:
         if len(parts) != 6:
             continue
         name, windows, attached, created, activity, group = parts
+        try:
+            windows_i = int(windows)
+            attached_i = int(attached)
+            created_i = int(created)
+            activity_i = int(activity)
+        except ValueError:
+            # A plugin format, older tmux build, or transient malformed row
+            # must not take down the complete session snapshot.  Treat it the
+            # same way as a row with the wrong field count and retain every
+            # independently parseable session.
+            continue
         raw.append((
             {
                 "name": name,
-                "windows": int(windows),
-                "attached": int(attached),
-                "created": int(created),
-                "activity": int(activity),
+                "windows": windows_i,
+                "attached": attached_i,
+                "created": created_i,
+                "activity": activity_i,
             },
             group,
         ))
@@ -179,6 +190,16 @@ def list_panes() -> list[PaneInfo]:
         if len(parts) != 11:
             continue
         sess, wi, wn, pi, pane_id, cmd, pid, cwd, w, h, active = parts
+        try:
+            pid_i = int(pid)
+            width_i = int(w)
+            height_i = int(h)
+        except ValueError:
+            # Preserve the rest of a multi-pane snapshot when one row is
+            # malformed instead of surfacing an unexpected CLI exception.
+            continue
+        if active not in {"0", "1"}:
+            continue
         out.append({
             "session": sess,
             "window": wi,
@@ -186,10 +207,10 @@ def list_panes() -> list[PaneInfo]:
             "pane": pi,
             "pane_id": pane_id,
             "command": cmd,
-            "pid": int(pid),
+            "pid": pid_i,
             "cwd": cwd,
-            "width": int(w),
-            "height": int(h),
+            "width": width_i,
+            "height": height_i,
             "active": active == "1",
         })
     return out
@@ -562,19 +583,19 @@ def wait_idle(target: Target, idle_sec: float,
     if not exists(target.session):
         return False, f"no such session: {target.session}"
 
-    deadline = time.time() + timeout_sec if timeout_sec > 0 else None
+    deadline = time.monotonic() + timeout_sec if timeout_sec > 0 else None
     # Compare captured content directly rather than its ``hash()``: hash()
     # carries a (tiny) collision risk that would falsely read "quiet", and a
     # 200-line capture is cheap to hold. ``None`` sentinel forces the first
     # observation to count as a change.
     last_content = None
-    last_change = time.time()
+    last_change = time.monotonic()
     poll = 0.2
     while True:
         ok, content = capture_target(target, lines=200)
         if not ok:
             return False, content
-        now = time.time()
+        now = time.monotonic()
         if content != last_content:
             last_content = content
             last_change = now

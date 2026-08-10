@@ -71,6 +71,38 @@ class MakeInstallTests(unittest.TestCase):
             self.assertFalse((base / "bin" / "tb").exists())
             self.assertFalse((target / "logging.md").exists())
 
+    def test_install_and_uninstall_preserve_unmanaged_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            prefix = root / "prefix with spaces"
+            state = root / "state"
+            prefix.mkdir()
+            command = prefix / "tb"
+            command.write_text("user-owned\n", encoding="utf-8")
+            variables = [
+                f"PREFIX={prefix}",
+                f"TMUX_CLI_HOME={state}",
+            ]
+            installed = subprocess.run(
+                ["make", "install", *variables],
+                cwd=ROOT,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertNotEqual(installed.returncode, 0)
+            self.assertEqual(command.read_text(encoding="utf-8"), "user-owned\n")
+
+            subprocess.run(
+                ["make", "uninstall", *variables],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            self.assertEqual(command.read_text(encoding="utf-8"), "user-owned\n")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import fcntl
 import json
+import os
+import tempfile
 from typing import Any
 
 from . import config
@@ -178,8 +182,8 @@ def normalize(raw: Any) -> dict[str, Any]:
     return out
 
 
-def load() -> dict[str, Any]:
-    config.ensure_dirs()
+def _load_unlocked() -> dict[str, Any]:
+    """Read the last complete config snapshot without taking the write lock."""
     try:
         raw = json.loads(config.DASHBOARD_CONFIG_FILE.read_text())
     except (OSError, ValueError, TypeError):
@@ -187,11 +191,84 @@ def load() -> dict[str, Any]:
     return normalize(raw)
 
 
-def save(raw: Any) -> dict[str, Any]:
+@contextmanager
+def _write_lock():
+    """Serialize writers on a stable inode beside the replaced data file."""
     config.ensure_dirs()
-    normalized = normalize(raw)
-    config.DASHBOARD_CONFIG_FILE.write_text(
-        json.dumps(normalized, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    lock_path = config.DASHBOARD_CONFIG_FILE.with_name(
+        config.DASHBOARD_CONFIG_FILE.name + ".lock",
     )
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_CLOEXEC", 0)
+    fd = os.open(lock_path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _save_unlocked(normalized: dict[str, Any]) -> None:
+    """Durably replace the config while the caller holds ``_write_lock``."""
+    payload = json.dumps(normalized, indent=2, sort_keys=True) + "\n"
+    fd, raw_tmp = tempfile.mkstemp(
+        prefix=f".{config.DASHBOARD_CONFIG_FILE.name}.",
+        suffix=".tmp",
+        dir=str(config.DASHBOARD_CONFIG_FILE.parent),
+    )
+    tmp = config.DASHBOARD_CONFIG_FILE.with_name(os.path.basename(raw_tmp))
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            fd = -1
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(tmp, config.DASHBOARD_CONFIG_FILE)
+        directory_fd = os.open(
+            config.DASHBOARD_CONFIG_FILE.parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if fd >= 0:
+            os.close(fd)
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def load() -> dict[str, Any]:
+    # Writers publish with os.replace(), so readers see either the old or the
+    # new complete snapshot and do not need to contend on the write lock.
+    config.ensure_dirs()
+    return _load_unlocked()
+
+
+def save(raw: Any) -> dict[str, Any]:
+    normalized = normalize(raw)
+    with _write_lock():
+        _save_unlocked(normalized)
     return normalized
+
+
+def update_values(values: dict[str, Any]) -> dict[str, Any]:
+    """Apply one key batch without losing a concurrent independent update."""
+    with _write_lock():
+        current = _load_unlocked()
+        current.update(values)
+        normalized = normalize(current)
+        _save_unlocked(normalized)
+        return normalized
+
+
+def set_value(key: str, value: Any) -> dict[str, Any]:
+    """Set one key without losing a concurrent independent key update."""
+    return update_values({key: value})

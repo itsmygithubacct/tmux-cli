@@ -79,9 +79,12 @@ class AgentExtensionLifecycleTests(unittest.TestCase):
         self.assertIn("agents_section", reg.ui_blocks)
         self.assertIn("config_agent", reg.ui_blocks)
         # Static JS from static/
-        self.assertEqual(
-            sorted(p.name for p in reg.static_js),
-            ["agents.js", "runs.js", "tasks.js"],
+        # These assets are the lifecycle contract; a compatible extension may
+        # add more JavaScript without requiring a core test update.
+        self.assertTrue(
+            {"agents.js", "runs.js", "tasks.js"}.issubset(
+                {path.name for path in reg.static_js},
+            ),
         )
         # Startup + shutdown hooks from startup.py
         self.assertEqual(len(reg.startup), 1)
