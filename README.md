@@ -22,6 +22,8 @@ preserved for later recovery. The optional
 > browser? See **[tmux-browse](https://github.com/itsmygithubacct/tmux-browse)**,
 > which builds on this CLI and pulls it in as a submodule.
 
+![`tb ls` and `tb ls --json` listing three sessions](docs/images/tb-ls.png)
+
 ## What it does
 
 - Lists, creates, renames, attaches to and kills tmux sessions without
