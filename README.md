@@ -96,7 +96,8 @@ the **[permanent logging guide](docs/logging.md)**.
 | Permanent logs | `logs` |
 
 Global flags (before or after the verb): `--json`, `--quiet`/`-q`,
-`--no-header`, `--version`. Destructive verbs require `-f`/`--force`.
+`--no-header`, `--version`. `kill` requires `-f`/`--force` when stdout is a
+terminal.
 
 ## For LLM tool-use
 
